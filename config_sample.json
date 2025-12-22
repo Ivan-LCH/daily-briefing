@@ -1,0 +1,21 @@
+{
+  "email_recipients": [
+    "user@company.com"
+  ],
+  "youtube_channels": {
+    "채널명": "채널ID"
+  },
+  "stock_tickers": [
+    "티커"
+  ],
+  "news_keywords": [
+    "Global Economy",
+    "US Stock Market",
+    "Fed Interest Rate",
+    "AI Technology"    
+  ],
+  "youtube_keywords": [
+    "AI 기술 핫 트렌드",
+    "IT 기술 핫 트레드"
+  ]  
+}

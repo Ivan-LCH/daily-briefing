@@ -1,0 +1,12 @@
+version: '3'
+
+services:
+  daily-agent:
+    build: .
+    container_name: daily_briefing_bot
+    # restart: unless-stopped
+    volumes:
+      - ./:/app
+    # 환경 변수 파일 로드 (.env)
+    env_file:
+      - .env

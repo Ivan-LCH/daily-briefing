@@ -1,0 +1,15 @@
+google-generativeai>=0.8.0
+google-api-python-client
+google-auth-oauthlib==0.4.6
+google-auth-httplib2
+youtube-transcript_api
+feedparser
+trafilatura
+schedule
+requests
+yfinance
+edge-tts
+moviepy==1.0.3
+matplotlib
+pillow==9.5.0
+numpy<2.0.0

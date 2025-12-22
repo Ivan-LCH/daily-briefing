@@ -1,0 +1,24 @@
+# --- 1. 보안 파일 (절대 업로드 금지) ---
+.env
+client_secret.json
+token.json
+config.json
+auth_youtube.py
+# (auth_youtube.py도 인증 관련 로직이나 키가 있다면 제외하는 게 좋습니다. 아니라면 빼도 됩니다.)
+
+# --- 2. 임시 파일 및 캐시 ---
+__pycache__/
+*.pyc
+requirements.txt.swp
+
+# --- 3. 생성된 결과물 (용량 큼) ---
+run.log
+*.mp4
+*.mp3
+*_chart.png
+
+# --- 4. 로고 (임시 파일 제외) ---
+logos/*_temp.png
+
+# --- 5. 시스템 파일 ---
+.DS_Store

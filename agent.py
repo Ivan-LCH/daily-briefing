@@ -193,14 +193,14 @@ def collect_stock_data(tickers):
 
 
 # -----------------------------------------------------------------------------------------------------------------------------#
-# --- 3. 채널 기반 유튜브 수집 (48시간 이내) ---
+# --- 3. 채널 기반 유튜브 수집 (24시간 이내) ---
 # -----------------------------------------------------------------------------------------------------------------------------#
 
 def collect_channel_youtube_data(channels_dict):
     print("🎥 유튜브 채널 수집 중...")
-    youtube    = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+    youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
     video_data = []
-    now        = datetime.utcnow()
+    now = datetime.utcnow()
 
     for name, channel_id in channels_dict.items():
         try:
@@ -215,30 +215,31 @@ def collect_channel_youtube_data(channels_dict):
             
             if not pl_res.get('items'): continue
 
-            for item in pl_res['items']: # 최신 5개 중 시간 맞는것 탐색
+            for item in pl_res['items']: 
                 vid          = item['snippet']['resourceId']['videoId']
                 title        = item['snippet']['title']
                 pub_date_str = item['snippet']['publishedAt']
                 
-                # [수정] 48시간 -> 24시간으로 변경
+                # 24시간 이내
                 pub_date_dt = datetime.strptime(pub_date_str, "%Y-%m-%dT%H:%M:%SZ")
                 if (now - pub_date_dt).total_seconds() > 24 * 3600:
-                    continue # 24시간 지난 건 패스
+                    continue
                 
                 pub_date_kst = (pub_date_dt + timedelta(hours=9)).strftime("%Y-%m-%d")
                 transcript   = get_timed_transcript(vid)
                 content      = transcript[:40000] if transcript else f"(자막 없음) {item['snippet']['description'][:1000]}"
 
                 video_data.append({
-                    'type'      : 'channel',
-                    'source'    : name,
-                    'title'     : title,
-                    'date'      : pub_date_kst,
-                    'url'       : f"https://www.youtube.com/watch?v={vid}",
-                    'content'   : content
+                    'type'          : 'channel',
+                    'source'        : name,
+                    'channel_name'  : name, # [Fix] Page 5를 위해 명시적으로 추가
+                    'title'         : title,
+                    'date'          : pub_date_kst,
+                    'url'           : f"https://www.youtube.com/watch?v={vid}",
+                    'content'       : content
                 })
-                print(f"  - [{name}] 확보: {title}")
-                break # 채널당 최신 1개만 확보하고 탈출 (원하면 break 제거)
+                print(f"   - [{name}] 확보: {title}")
+                break 
         except: pass
         
     return video_data
@@ -246,44 +247,110 @@ def collect_channel_youtube_data(channels_dict):
 
 
 # -----------------------------------------------------------------------------------------------------------------------------#
-# --- [NEW] 4. AI 편집장: 주제 선정 및 대본 작성 ---
+# 4. AI 편집장: 모든 주식 요약 (Summary Generation for All Stocks)
 # -----------------------------------------------------------------------------------------------------------------------------#
 
-def plan_and_script_video(stocks, news):
-    print("🧠 AI 편집장이 쇼츠 주제를 선정 중...")
+def analyze_and_summarize(stocks, news, youtube):
+    print("🧠 AI 편집장: 모든 주식 및 뉴스 핵심 요약 생성 중...")
     
-    # 데이터 요약
-    context = json.dumps({'stocks': stocks, 'news': news}, ensure_ascii=False)
+    # 분석 대상 주식 심볼들
+    stock_symbols = [s['symbol'] for s in stocks]
     
-    # 프롬프트 수정: 인사는 인트로 영상이 하니까, AI는 '본론'만 작성
+    raw_context = json.dumps({
+        'stocks': [ {'symbol': s['symbol'], 'change': s['change_str']} for s in stocks ], 
+        'news': news[:5],
+        'youtube': youtube[:5]
+    }, ensure_ascii=False)
+    
     prompt = f"""
-    너는 주식 유튜버야. 아래 데이터에서 '가장 조회수 터질만한' 주제 1개를 골라.
-    그리고 45초 분량의 쇼츠 대본을 써줘.
+    너는 금융 분석가야. 아래 데이터를 분석해서 다음 JSON 형식으로 요약해줘.
+    
+    [데이터]
+    {raw_context}
+    
+    [요구사항]
+    1. stock_summaries: 리스트에 있는 **모든 주식({', '.join(stock_symbols)})**에 대해 각각 1문장으로 핵심 이슈 요약.
+       - 가격 정보는 제외하고 '재료/이슈' 위주로 작성.
+    2. news_summaries: 각 뉴스의 핵심 내용을 "1문장"으로 요약.
+    3. youtube_summaries: 각 영상의 핵심 내용을 "1문장"으로 요약.
+    
+    [JSON 형식]
+    {{
+        "stock_summaries": [
+            {{ "symbol": "TSLA", "summary": "..." }},
+            {{ "symbol": "PLTR", "summary": "..." }},
+            ...
+        ],
+        "news_items": [ ... ],
+        "youtube_items": [ ... ]
+    }}
+    """
+    try:
+        res = model.generate_content(prompt)
+        text = res.text.replace("```json", "").replace("```", "").strip()
+        data = json.loads(text)
+        
+        # 1. 주식 요약 매핑
+        summary_map = { item['symbol']: item['summary'] for item in data.get('stock_summaries', []) }
+        for s in stocks:
+            s['analysis'] = summary_map.get(s['symbol'], "특이사항 없음")
+
+        # 2. 뉴스 요약 매핑
+        for i, n in enumerate(news):
+            if i < len(data['news_items']):
+                n['summary'] = data['news_items'][i]['summary']
+                
+        # 3. 유튜브 요약 매핑
+        for i, y in enumerate(youtube):
+            if i < len(data['youtube_items']):
+                y['summary'] = data['youtube_items'][i]['summary']
+                
+        return stocks, news, youtube
+        
+    except Exception as e:
+        print(f"⚠️ 요약 실패: {e}")
+        return stocks, news, youtube
+
+
+
+def plan_video_script(stocks, news, youtube):
+    """ 이미 요약된 데이터를 바탕으로 대본(Script)만 작성 """
+    print("📝 AI 작가: 영상 대본 작성 중...")
+    
+    target_stock = stocks[0]
+    
+    context = json.dumps({
+        'stock_summary': target_stock.get('analysis', ''),
+        'news': [n.get('summary', n['title']) for n in news[:4]],
+        'youtube': [y.get('summary', y['title']) for y in youtube[:4]]
+    }, ensure_ascii=False)
+    
+    prompt = f"""
+    아래 요약된 금융 데이터를 바탕으로 6단계 쇼츠 대본을 작성해.
     
     [데이터]
     {context}
     
-    [요구사항]
-    1. 주제: 등락폭이 가장 크거나, 호재/악재가 명확한 종목 선택 (우선순위: TSLA, PLTR, GOOG, 나머지).
-    2. 톤: 자극적이지만 차분한 구어체로.
-    3. **[중요] 인사 생략**: "안녕하세요" 같은 인사는 절대 하지 마. (앞에 인트로 영상이 따로 있음)
-    4. **바로 본론 시작**: "오늘 테슬라가 무려 10%나 폭등했습니다. 그 이유는..." 처럼 바로 분석으로 들어갈 것.
-    5. 내용: 호재/악재의 출처와 핵심 내용을 객관적으로 포함.
-    6. JSON 포맷으로만 응답해:
+    [구성]
+    Scene 1 (Market): S&P500 맵. 시장 브리핑.
+    Scene 2 (News): 주요 뉴스 브리핑.
+    Scene 3 (Stock Intro): {target_stock['symbol']} 소개.
+    Scene 4 (Stock Chart): 차트 분석 멘트.
+    Scene 5 (YouTube): 유튜브 반응 전달.
+    Scene 6 (Outro): 클로징 멘트 (간단히).
+
+    [JSON 반환]
     {{
-        "symbol": "종목코드(예:TSLA)", 
-        "title" : "로보택시 규제 승인 임박! 역대급 폭등 시작되나?", 
-        "script": "오늘 테슬라가 로보택시 규제 승인 기대감으로..."
+        "title": "영상 제목",
+        "scene1": "...", "scene2": "...", "scene3": "...", 
+        "scene4": "...", "scene5": "...", "scene6": "..."
     }}
-    """    
-    
+    """
     try:
         res = model.generate_content(prompt)
         text = res.text.replace("```json", "").replace("```", "").strip()
         return json.loads(text)
-    except Exception as e:
-        print(f"❌ 대본 작성 실패: {e}")
-        return None
+    except: return None
 
 
 # -----------------------------------------------------------------------------------------------------------------------------#
@@ -338,14 +405,14 @@ def collect_keyword_youtube_data(keywords):
 
 
 # -----------------------------------------------------------------------------------------------------------------------------#
-# --- 통합 리포트 생성 (영상 링크 추가됨) ---
+# [NEW] 리포트 생성 함수 (변수명 stocks로 통일)
 # -----------------------------------------------------------------------------------------------------------------------------#
 
-def generate_report(stock_data, general_news, channel_videos, trend_videos, video_url=None):
-    print("🧠 AI 통합 분석 및 리포트 작성 중...")
+# [수정] 첫 번째 인자를 stock_data -> stocks 로 변경 (호출하는 곳과 이름 일치)
+def generate_report(stocks, general_news, channel_videos, trend_videos, video_url=None):
+    print("📝 CEO 맞춤형 심층 리포트 작성 중...")
     
-    # 1. [Section 0] 영상 섹션 HTML 생성 (파이썬에서 직접 삽입)
-    # 이메일 CSS 스타일(h2)과 통일감을 주기 위해 h2 태그 사용
+    # 1. [Section 0] 영상 섹션 HTML 생성
     video_section_html = ""
     if video_url:
         video_section_html = f"""
@@ -361,22 +428,22 @@ def generate_report(stock_data, general_news, channel_videos, trend_videos, vide
         </div>
         <hr style="border: 0; border-top: 1px dashed #ddd; margin: 30px 0;">
         """
-    elif not stock_data:
-        # 휴장일일 경우 안내 메시지
+    elif not stocks: # [수정] 변수명 stock_data -> stocks
         video_section_html = """
         <h2>🎬 [Section 0] 오늘자 1분 요약</h2>
         <p><i>(오늘은 주식 시장 휴장일 또는 데이터 부족으로 영상이 생성되지 않았습니다.)</i></p>
         <hr>
         """
 
-    # 2. AI 리포트 생성 (Section 1 ~ 4)
+    # 2. AI 리포트 생성
     full_data = json.dumps({
-        "stocks"   : stock_data,
+        "stocks"   : stocks, # [수정] 변수명 일치
         "news"     : general_news,
         "channels" : channel_videos,
         "trends"   : trend_videos
     }, ensure_ascii=False)
 
+    # [프롬프트 유지] 사용자님이 작성하신 내용 그대로
     prompt = f"""
 당신은 바쁜 CEO를 위해 매일 아침 투자 보고서를 작성하는 **수석 투자 분석가**입니다.
 제공된 데이터를 기반으로, CEO가 **원본 링크를 클릭할 필요가 없을 정도로** 구체적이고 완결성 있는 HTML 리포트를 작성하세요.
@@ -393,7 +460,7 @@ def generate_report(stock_data, general_news, channel_videos, trend_videos, vide
 ---
 
 [섹션 1: 📈 Global Market Insight (관심 종목 & 핵심 이슈)]
-- 관심 종목의 등락 원인을 **'육하원칙'**에 의거하여 명쾌하게 분석하여 3-4줄로 요약하세요.
+- 관심 종목("stocks" 데이터)의 등락 원인을 **'육하원칙'**에 의거하여 명쾌하게 분석하여 3-4줄로 요약하세요.
 - 단순히 '올랐다'가 아니라, **'어떤 뉴스/실적/발언 때문에'** 움직였는지 명확하게 설명하세요.
 
 [섹션 2: 📰 Deep Dive (주요 경제 뉴스 상세 분석)]
@@ -436,8 +503,6 @@ def generate_report(stock_data, general_news, channel_videos, trend_videos, vide
     try:
         response = model.generate_content(prompt)
         ai_report_body = response.text.replace("```html", "").replace("```", "").strip()
-        
-        # [최종 합체] Section 0 (영상) + Section 1~4 (AI 리포트)
         return video_section_html + ai_report_body
     
     except Exception as e:
@@ -628,75 +693,80 @@ def cleanup_files():
 
 
 # -----------------------------------------------------------------------------------------------------------------------------#
-# job (Updated)
+# job (Final: Full Automation)
 # -----------------------------------------------------------------------------------------------------------------------------#
 
 def job():
-    print(f"\n🚀 시작: {datetime.now()}")
-    cleanup_files() # 청소
+    print(f"\n🚀 [Final] 데일리 브리핑 시작: {datetime.now()}")
     
     config = load_config()
     if not config: return
     
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    
     # 1. 데이터 수집
-    stocks         = collect_stock_data(config.get('stock_tickers', []))
-    general_news   = fetch_news_raw(config.get('news_keywords', []), limit=3)
+    stocks = collect_stock_data(config.get('stock_tickers', []))
+    
+    # [수정] Config 키워드 사용 (사용자 요청)
+    general_news = fetch_news_raw(config.get('news_keywords', []), limit=5)
+    
     channel_videos = collect_channel_youtube_data(config.get('youtube_channels', {}))
-    trend_videos   = collect_keyword_youtube_data(config.get('youtube_keywords', []))
+    trend_videos = collect_keyword_youtube_data(config.get('youtube_keywords', []))
     
-    video_url = None
+    all_youtube = channel_videos + trend_videos
     
-    # 인트로용 뉴스 리스트
-    headline_list = []
-    if general_news:
-        headline_list = [item['title'] for item in general_news[:2]]
-
-    # [수정] stocks가 없어도 general_news가 있으면 영상 제작 시도
     if stocks or general_news:
         try:
-            # 만약 stocks가 비어있다면, 차트 그릴 때 에러가 날 수 있으므로
-            # plan_and_script_video 함수가 '뉴스' 중심으로 대본을 짜도록 유도해야 함.
-            # 하지만 현재 video_studio는 'symbol'이 필수이므로, 
-            # stocks가 비어있을 경우를 대비해 가상의 symbol이나 대표 종목(예: 주식 리스트 첫번째)을 지정하는 로직이 필요.
+            # 2. 콘텐츠 요약 생성
+            stocks, general_news, all_youtube = analyze_and_summarize(stocks, general_news, all_youtube)
             
-            target_stocks = stocks if stocks else [{'symbol': 'SPY', 'price': '-', 'change_str': '-'}] # 비상용 더미
+            # 3. 영상 대본 작성
+            script_plan = plan_video_script(stocks, general_news, all_youtube)
             
-            plan = plan_and_script_video(target_stocks, general_news) 
-            if plan:
-                print(f"🎬 선택된 주제: {plan['title']}")
+            video_url = None
+            
+            if script_plan:
+                print(f"🎬 대본 및 콘텐츠 확정: {script_plan['title']}")
                 
-                # 영상 제작
-                video_file = video_studio.make_video(
-                    topic_data=plan, 
-                    script_text=plan['script'], 
-                    stock_list=stocks, 
-                    news_list=general_news, 
-                    youtube_list=channel_videos,
-                    trend_list=trend_videos
+                structured_data = {
+                    'stocks': stocks,
+                    'news': general_news,
+                    'youtube': all_youtube
+                }
+
+                # 4. 영상 제작 (날짜 전달)
+                video_file = video_studio.make_video_module(
+                    scene_scripts=script_plan, 
+                    structured_data=structured_data,
+                    date_str=today_str
                 )
                 
+                # 5. 유튜브 업로드
                 if video_file:
+                    print("📤 유튜브 업로드 시작...")
                     temp_report = generate_report(stocks, general_news, channel_videos, trend_videos, video_url=None)
-                    description_text = html_to_youtube_description(temp_report)
-                    full_description = f"[상세 분석 리포트]\n{description_text}"
-                    video_url = youtube_manager.upload_short(video_file, plan['title'], description=full_description)
+                    desc_text = html_to_youtube_description(temp_report)
+                    
+                    video_url = youtube_manager.upload_short(
+                        video_file, 
+                        title=script_plan['title'], 
+                        description=desc_text
+                    )
+                    print(f"✅ 업로드 완료: {video_url}")
+                
+                # 6. 메일 발송
+                if video_url:
+                     print("📧 이메일 발송 준비...")
+                     report = generate_report(stocks, general_news, channel_videos, trend_videos, video_url)
+                     send_email(config.get('email_recipients', []), report)
+                     send_slack(config.get('slack_webhook_url'), report)
 
         except Exception as e:
-            print(f"⚠️ 영상 제작 중 에러: {e}")
+            print(f"⚠️ 전체 프로세스 중 에러: {e}")
             import traceback
             traceback.print_exc()
             
-    # 리포트 발송
-    if any([stocks, general_news, channel_videos, trend_videos]):
-        report = generate_report(stocks, general_news, channel_videos, trend_videos, video_url)
-        send_email(config.get('email_recipients', []), report)
-        send_slack(config.get('slack_webhook_url'), report)
-        
-        cleanup_files() # 정리
-    else:
-        print("수집된 데이터가 없습니다.")
-
-    print("🏁 끝\n")
+    print("🏁 [Final] 모든 작업 완료\n")
 
 
 

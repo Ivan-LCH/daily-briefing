@@ -13,3 +13,7 @@ moviepy==1.0.3
 matplotlib
 pillow==9.5.0
 numpy<2.0.0
+pandas
+beautifulsoup4
+selenium
+webdriver-manager

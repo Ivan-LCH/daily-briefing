@@ -635,7 +635,7 @@ def send_slack(webhook_url, html_body):
 
 
 # -----------------------------------------------------------------------------------------------------------------------------#
-# [NEW] HTML to YouTube Description (URL 보존)
+# [NEW] HTML to YouTube Description (URL 보존 & AI 고지 추가)
 # -----------------------------------------------------------------------------------------------------------------------------#
 def html_to_youtube_description(html_content):
     if not html_content: return ""
@@ -646,11 +646,10 @@ def html_to_youtube_description(html_content):
     
     # 태그 -> 텍스트 변환
     text = text.replace("<br>", "\n").replace("</p>", "\n").replace("</li>", "\n")
-    text = re.sub(r'<h[1-6]>(.*?)</h[1-6]>', r'\n\n■ \1\n', text) # 제목 앞에 ■ 붙임
+    text = re.sub(r'<h[1-6]>(.*?)</h[1-6]>', r'\n\n■ \1\n', text) 
     text = text.replace("<li>", "- ")
     
-    # [핵심] 링크 처리: <a href="URL">TEXT</a> -> "TEXT: URL" 형태로 변환
-    # 예: <a href="https://google.com">기사 읽기</a> -> 기사 읽기: https://google.com
+    # 링크 처리: <a href="URL">TEXT</a> -> "TEXT: URL"
     text = re.sub(r'<a\s+href="([^"]+)"[^>]*>(.*?)</a>', r'\2: \1', text)
     
     # 나머지 태그 제거
@@ -659,7 +658,21 @@ def html_to_youtube_description(html_content):
     # 공백 정리
     text = re.sub(r'\n\s*\n', '\n\n', text).strip()
     
-    return text
+    # [Fix] 유튜브 정책 준수를 위한 AI 생성 고지 문구 추가
+    disclaimer = """
+    
+------------------------------------------------
+⚠️ 알림 (Disclaimer)
+이 영상은 인공지능(AI)을 활용하여 자동 생성되었습니다.
+- 대본 및 분석: Google Gemini 1.5
+- 음성: Microsoft Edge TTS
+- 영상 편집: Python (MoviePy)
+
+투자의 책임은 투자자 본인에게 있으며, 제공된 정보는 참고용입니다.
+------------------------------------------------
+    """
+    
+    return text + disclaimer
 
 
 

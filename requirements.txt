@@ -17,3 +17,5 @@ pandas
 beautifulsoup4
 selenium
 webdriver-manager
+pandas_market_calendars
+pytz

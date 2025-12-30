@@ -27,7 +27,10 @@ import glob
 import pandas_market_calendars as mcal
 import pytz
 
-
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.image import MIMEImage
 
 # -----------------------------------------------------------------------------------------------------------------------------#
 # Set Environment
@@ -39,6 +42,7 @@ EMAIL_SENDER    = os.getenv('EMAIL_SENDER')
 EMAIL_PASSWORD  = os.getenv('EMAIL_PASSWORD')
 
 genai.configure(api_key=GOOGLE_API_KEY)
+
 
 
 
@@ -156,26 +160,25 @@ def fetch_news_raw(keywords, limit=2):
 
 
 # -----------------------------------------------------------------------------------------------------------------------------#
-# is nyse market open
+# 1. Market Status Check (사용자 요청 로직 복원)
 # -----------------------------------------------------------------------------------------------------------------------------#
 
-def is_nyse_market_open():
+def check_market_status():
     """
-    [핵심 로직] 현재 시점(뉴욕 시간 기준)이 NYSE 개장일인지 확인
+    pandas_market_calendars를 이용하여 정밀하게 휴장일을 판단합니다.
     """
     try:
         # 1. NYSE(뉴욕증권거래소) 달력 로드
-        nyse = mcal.get_calendar('NYSE')
+        nyse         = mcal.get_calendar('NYSE')
         
         # 2. 현재 시간을 뉴욕 시간(US/Eastern)으로 변환
-        # (Docker 컨테이너가 UTC여도 정확하게 뉴욕 날짜를 계산함)
-        now_utc = datetime.now(pytz.utc)
-        ny_tz = pytz.timezone('US/Eastern')
-        now_ny = now_utc.astimezone(ny_tz)
+        now_utc      = datetime.now(pytz.utc)
+        ny_tz        = pytz.timezone('US/Eastern')
+        now_ny       = now_utc.astimezone(ny_tz)
         current_date = now_ny.date()
         
         # 3. 오늘 날짜가 스케줄에 있는지 확인
-        schedule = nyse.schedule(start_date=current_date, end_date=current_date)
+        schedule     = nyse.schedule(start_date=current_date, end_date=current_date)
         
         # 스케줄이 비어있으면(Empty) 휴장일(주말/공휴일)
         if schedule.empty:
@@ -187,61 +190,73 @@ def is_nyse_market_open():
         
     except Exception as e:
         print(f"⚠️ 마켓 캘린더 확인 중 에러: {e}")
-        # 에러 발생 시 보수적으로 False(휴장) 반환하거나, 
-        # yfinance 데이터 유무로 2차 확인하는 로직을 넣을 수도 있음
-        return False
+        # 에러 발생 시 보수적으로 yfinance 데이터 유무로 2차 확인
+        try:
+            spy = yf.Ticker("SPY")
+            return not spy.history(period="1d").empty
+        except:
+            return False
+
 
 # -----------------------------------------------------------------------------------------------------------------------------#
-# 2. 주식 수집 
+# 2. Data Collection (경제 지표 검색 추가 & 포맷 고정)
 # -----------------------------------------------------------------------------------------------------------------------------#
+
 def collect_stock_data(tickers):
     print("📈 주식 데이터 수집 중...")
-    stock_data = []
-    
-    # [수정] 라이브러리를 이용한 깔끔한 휴장일 체크
-    is_market_open = is_nyse_market_open()
+    stock_data     = []
+    is_market_open = check_market_status()
 
     for symbol in tickers:
         try:
-            # 뉴스 수집은 장 열림 여부와 상관없이 진행
+            # 뉴스 수집 (기존 로직 유지)
             related_news = fetch_news_raw([f"{symbol} stock news", f"{symbol} analysis"], limit=2)
             
             if is_market_open:
-                # [개장일 로직]
                 ticker = yf.Ticker(symbol)
-                h = ticker.history(period="5d") # 넉넉히 5일치 가져옴
+                h = ticker.history(period="5d")
                 
                 if len(h) >= 2:
-                    last = h['Close'].iloc[-1]
-                    prev = h['Close'].iloc[-2]
-                    change = last - prev
-                    pct = (change / prev) * 100
+                    last       = h['Close'].iloc[-1]
+                    prev       = h['Close'].iloc[-2]
+                    diff       = last - prev
+                    pct        = (diff / prev) * 100
                     
-                    price_str = f"${last:.2f}"
-                    change_str = f"{change:+.2f} ({pct:+.2f}%)"
+                    price_str  = f"${last:.2f}"
+                    # [요청] 증감량 (증감률) 포맷: -15.55 (-3.27%)
+                    change_str = f"{diff:+.2f} ({pct:+.2f}%)"
                 else:
-                    # 개장일인데 데이터가 아직 안 들어온 경우 (장 극초반 등)
-                    price_str = "N/A"
-                    change_str = "0.00%"
+                    price_str  = "N/A"
+                    change_str = "0.00 (0.00%)"
             else:
-                # [휴장일 로직]
-                # video_studio.py가 감지할 수 있도록 "Market Closed" 명시
-                price_str = "N/A"
+                price_str  = "N/A"
                 change_str = "Market Closed"
 
             stock_data.append({
-                'symbol': symbol,
-                'price': price_str,
-                'change_str': change_str,
-                'news_items': related_news
+                'symbol'     : symbol,
+                'price'      : price_str,
+                'change_str' : change_str,
+                'news_items' : related_news
             })
-            print(f"   - [{symbol}] 완료 ({price_str})")
-            
-        except Exception as e:
-            print(f"   ❌ [{symbol}] 처리 중 에러: {e}")
+            print(f"  - [{symbol}] {price_str} / {change_str}")
+        except:
             pass
-
     return stock_data
+
+
+# -----------------------------------------------------------------------------------------------------------------------------#
+# [신규] 공신력 있는 데이터를 위한 검색 함수
+# -----------------------------------------------------------------------------------------------------------------------------#
+
+def collect_economy_data():
+    print("🌍 경제 지표 및 일정 검색 중...")
+    queries = [
+        "CNN Fear and Greed Index current score today",
+        "Major US Economic Calendar events this week",
+        "US Stock Market Sector Performance today"
+    ]
+    # 기존 fetch_news_raw 활용 (구글 검색 결과 반환)
+    return fetch_news_raw(queries, limit=5)
 
 
 
@@ -300,80 +315,132 @@ def collect_channel_youtube_data(channels_dict):
 
 
 # -----------------------------------------------------------------------------------------------------------------------------#
-# 4. AI 편집장: 모든 주식 요약 (Summary Generation for All Stocks)
+# 4. AI 편집장: 주식 및 뉴스 요약 (One-Source Multi-Use)
 # -----------------------------------------------------------------------------------------------------------------------------#
-# 기존 함수 그대로 사용하되, JSON 파싱 부분만 살짝 보강하면 좋습니다.
 
-def analyze_and_summarize(stocks, news, youtube):
-    print("🧠 AI 편집장: 모든 주식 및 뉴스 핵심 요약 생성 중...")
+def analyze_and_summarize(stocks, news, youtube, economy_news):
+    print("🧠 AI 편집장: 데이터 분석 및 방송 대본(Script) 집필 중...")
     
-    stock_symbols = [s['symbol'] for s in stocks]
+    today_date = datetime.now().strftime("%m월 %d일")
     
-    # 데이터가 아예 없을 경우 방어 코드
     if not stocks and not news and not youtube:
         return stocks, news, youtube
 
+    # Raw Data 준비
     raw_context = json.dumps({
-        'stocks' : [ {'symbol': s['symbol'], 'change': s['change_str']} for s in stocks ], 
-        'news'   : news[:5],
-        'youtube': youtube[:5]
+        'stocks'               : [ {'symbol': s['symbol'], 'price': s['price'], 'change': s['change_str'], 'news': s.get('news_items', [])} for s in stocks ], 
+        'news'                 : news[:5],
+        'youtube'              : youtube[:5],
+        'economy_search_result': economy_news
     }, ensure_ascii=False)
     
     prompt = f"""
-    너는 금융 분석가야. 아래 데이터를 분석해서 다음 JSON 형식으로 요약해줘.
-    
+    당신은 월가(Wall St.)의 수석 애널리스트입니다. 제공된 주식/뉴스 데이터를 철저히 분석하여 JSON을 작성하세요.
+    **절대 없는 사실을 지어내지 마십시오.**
+    **[경제 지표]와 [섹터 동향]은 반드시 'economy_search_result'의 검색 결과에서 팩트를 찾아 기입하십시오.**
+
     [데이터]
     {raw_context}
     
-    [요구사항]
-    1. stock_summaries: 리스트에 있는 **모든 주식({', '.join(stock_symbols)})**에 대해 각각 1문장으로 핵심 이슈 요약.
-       - 가격 정보는 제외하고 '재료/이슈' 위주로 작성.
-       - **중요: 만약 주식의 price나 change가 'N/A' 또는 'Market Closed'라면, 가격 변동에 대한 언급은 절대 하지 말고, 오직 '최신 뉴스나 기업 이슈' 위주로만 작성할 것.**
-    2. news_summaries: 각 뉴스의 핵심 내용을 "1문장"으로 요약.
-    3. youtube_summaries: 각 영상의 핵심 내용을 "1문장"으로 요약.
+    [지시사항 1: 데이터 분석 (Visual & Email Data)]
+    1. stock_details: 리스트의 모든 주식에 대해 작성.
+       A. **video_summary (영상 자막용)**: 
+          - 길이: **2문장 내외(40~60자)**. 
+          - 내용: 등락의 구체적인 이유(뉴스 기반) 포함. 단순 사실 나열이 아니라 **"왜 올랐는지/내렸는지" 핵심 원인**을 반드시 포함할 것.
+          - 예: "실적 호조와 엔비디아 파트너십 발표로 급등했습니다." (O) / "소폭 상승했습니다." (X)
+
+       B. **email_summary (이메일 리포트용)**:
+          - 길이: **3~4문장의 깊이 있는 분석**.
+          - 내용: 해당 종목과 직접 관련된 뉴스(계약, 실적, CEO 발언, 거시경제 영향)를 찾아 인과관계를 설명.
+          - **주의:** 한국 국내 이슈(세제지원 등)를 미국 주식에 억지로 갖다 붙이지 마시오. 뉴스가 없으면 "특이 이슈 없음"이라고 솔직히 적으시오.
+          - 형식: "~때문에 상승했습니다."와 같은 평서문.
+
+    2. **economic_insight**:
+       - **[경제 뉴스 검색 결과]**에서 팩트를 찾아내세요.
+       - **fear_greed_index** (0~100 숫자): 검색 결과에서 확인된 'Fear & Greed Index' 현재 수치 (예: 65). 못 찾으면 "N/A".
+       - **market_sentiment**: 수치에 따른 상태 (예: Greed). 못 찾으면 "N/A".
+       - **calendar**: 검색 결과에 언급된 이번 주 주요 경제 일정 3가지. **반드시 날짜 포함할 것** (예: "CPI 발표 (2025-12-31)")
+       - **sector_summary**: 검색 결과에서 파악된 오늘 상승/하락 주도 섹터 1줄 요약. (예: "기술주 강세, 에너지 약세")
     
+    3. **news_items**: 
+       - 제공된 뉴스 제목과 1문장 상세 내용(detail).
+       - **주의:** 뉴스가 없으면 "특이 이슈 없음"이라고 솔직히 적으시오.
+
+    4. **youtube_items**: 
+       - 제공된 유튜브 영상의 제목 등을 보고 핵심 주제를 **1~2문장으로 요약**하세요.
+    
+    [지시사항 2: 방송 대본 (Audio Script)]
+    - **실제 영상에서 읽어줄 내레이션 대본**을 작성하세요. (구어체, 해요체, 자연스럽게)
+    - **문장이 너무 길어지지 않게 적절히 끊어서 작성하세요.**
+    - **scripts** 객체 안에 씬별로 작성하세요.
+       - **scene1 (Opening)**: "안녕하세요, {today_date} 데일리 브리핑입니다. 오늘 미 증시는..." (섹터/맵 분위기 언급)
+       - **scene2 (News)**: "먼저 주요 뉴스입니다." (가장 중요한 뉴스 1~2개 헤드라인 언급)
+       - **scene2_5 (Economy)**: "오늘의 경제 지표입니다." (공포지수 상태와 주요 일정 언급)
+       - **scene3 (Stocks)**: "주요 종목 흐름입니다." (가장 등락이 큰 종목 1~2개 위주로 코멘트. *모든 종목을 다 읽지 말고 특징주 위주로 요약*)
+       - **scene4 (Chart)**: "특히 주목할 종목은... (첫번째 종목)입니다." (차트 화면에서 읽을 멘트)
+       - **scene5 (YouTube)**: "유튜브 인사이트입니다. (채널명)에서는..." (주요 영상 1개 언급)
+       - **scene6 (Closing)**: "이상으로 브리핑을 마칩니다. 성공 투자를 기원합니다."
+
     [JSON 형식]
     {{
-        "stock_summaries": [
-            {{ "symbol": "TSLA", "summary": "..." }}
-        ],
-        "news_items": [ {{ "summary": "..." }} ],
-        "youtube_items": [ {{ "summary": "..." }} ]
+        "stock_details": [ ... ],
+        "economic_insight": {{ ... }},
+        "news_items": [ ... ],
+        "youtube_items": [ ... ],
+        "scripts": {{
+            "scene1": "...",
+            "scene2": "...",
+            "scene2_5": "...",
+            "scene3": "...",
+            "scene4": "...",
+            "scene5": "...",
+            "scene6": "..."
+        }}
     }}
     """
-    try:
-        res  = model.generate_content(prompt)
-        # Markdown 코드 블록 제거 강화
-        text = res.text.replace("```json", "").replace("```", "").strip()
-        
-        # 가끔 JSON 뒤에 설명이 붙는 경우를 대비해 첫 '{'와 마지막 '}' 사이만 추출
-        start_idx = text.find('{')
-        end_idx = text.rfind('}')
-        if start_idx != -1 and end_idx != -1:
-            text = text[start_idx:end_idx+1]
-            
-        data = json.loads(text)
-        
-        # 1. 주식 요약 매핑
-        summary_map = { item['symbol']: item['summary'] for item in data.get('stock_summaries', []) }
-        for s in stocks:
-            s['analysis'] = summary_map.get(s['symbol'], "특이사항 없음")
 
-        # 2. 뉴스 요약 매핑
+    try:
+        res           = model.generate_content(prompt)
+        text          = res.text.replace("```json", "").replace("```", "").strip()
+        start         = text.find('{')
+        end           = text.rfind('}')
+        data          = json.loads(text[start:end+1])
+        
+        # 1. 데이터 매핑 (Visual Data)
+        summary_map_v = {item['symbol']: item.get('video_summary', '') for item in data.get('stock_details', [])}
+        summary_map_e = {item['symbol']: item.get('email_summary', '') for item in data.get('stock_details', [])}
+        
+        for s in stocks:
+            s['video_summary'] = summary_map_v.get(s['symbol'], "분석 중...")
+            s['email_summary'] = summary_map_e.get(s['symbol'], "특이사항 없음")
+            s['analysis']      = s['email_summary']
+
         for i, n in enumerate(news):
             if i < len(data.get('news_items', [])):
-                n['summary'] = data['news_items'][i]['summary']
+                n['detail']    = data['news_items'][i].get('detail', '')
                 
-        # 3. 유튜브 요약 매핑
         for i, y in enumerate(youtube):
             if i < len(data.get('youtube_items', [])):
-                y['summary'] = data['youtube_items'][i]['summary']
-                
-        return stocks, news, youtube
+                y['summary']   = data['youtube_items'][i].get('summary', '')
+
+        # 2. 대본 추출 (Audio Script)
+        # scripts가 없으면 기본 멘트로 방어
+        generated_scripts = data.get('scripts', {
+            "scene1"  : f"{today_date} 증시 브리핑을 시작합니다.",
+            "scene2"  : "주요 뉴스입니다.",
+            "scene2_5": "경제 지표를 확인하겠습니다.",
+            "scene3"  : "주요 종목 현황입니다.",
+            "scene4"  : "차트 분석입니다.",
+            "scene5"  : "유튜브 트렌드입니다.",
+            "scene6"  : "시청해주셔서 감사합니다."
+        })
+
+        return stocks, news, youtube, data.get('economic_insight', {}), generated_scripts
         
     except Exception as e:
-        print(f"⚠️ 요약 실패: {e}")
-        return stocks, news, youtube
+        print(f"⚠️ AI 분석/집필 실패: {e}")
+        # 실패 시 기본 데이터 반환
+        return stocks, news, youtube, {}, {}
         
 
 # -----------------------------------------------------------------------------------------------------------------------------#
@@ -385,26 +452,26 @@ def plan_video_script(stocks, news, youtube):
     print("📝 AI 작가: 영상 대본 작성 중...")
     
     # [수정] 주식이 하나도 없을 경우(휴장일) 대응 로직
-    main_topic = ""
-    main_summary = ""
+    main_topic    = ""
+    main_summary  = ""
     
     if stocks:
         target_stock = stocks[0]
-        main_topic = target_stock['symbol']
+        main_topic   = target_stock['symbol']
         main_summary = target_stock.get('analysis', '')
     elif news:
         # 주식이 없으면 첫 번째 뉴스를 메인으로
-        main_topic = "Global News"
+        main_topic   = "Global News"
         main_summary = news[0].get('summary', news[0]['title'])
     else:
         print("❌ 대본을 작성할 데이터가 부족합니다.")
         return None
 
     context = json.dumps({
-        'main_topic': main_topic,
-        'main_summary': main_summary,
-        'news': [n.get('summary', n['title']) for n in news[:4]],
-        'youtube': [y.get('summary', y['title']) for y in youtube[:4]]
+        'main_topic'    : main_topic,
+        'main_summary'  : main_summary,
+        'news'          : [n.get('summary', n['title']) for n in news[:4]],
+        'youtube'       : [y.get('summary', y['title']) for y in youtube[:4]]
     }, ensure_ascii=False)
     
     prompt = f"""
@@ -433,11 +500,12 @@ def plan_video_script(stocks, news, youtube):
     }}
     """
     try:
-        res = model.generate_content(prompt)
-        text = res.text.replace("```json", "").replace("```", "").strip()
+        res       = model.generate_content(prompt)
+        text      = res.text.replace("```json", "").replace("```", "").strip()
         
         start_idx = text.find('{')
-        end_idx = text.rfind('}')
+        end_idx   = text.rfind('}')
+        
         if start_idx != -1 and end_idx != -1:
             text = text[start_idx:end_idx+1]
             
@@ -454,11 +522,11 @@ def plan_video_script(stocks, news, youtube):
 
 def collect_keyword_youtube_data(keywords):
     print("🔥 유튜브 트렌드 검색 중...")
-    youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
-    trend_data = []
+    youtube     = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+    trend_data  = []
     
     # 24시간 전 시간 구하기
-    yesterday = (datetime.utcnow() - timedelta(days=1)).isoformat("T") + "Z"
+    yesterday   = (datetime.utcnow() - timedelta(days=1)).isoformat("T") + "Z"
 
     for keyword in keywords:
         try:
@@ -500,21 +568,18 @@ def collect_keyword_youtube_data(keywords):
 
 
 # -----------------------------------------------------------------------------------------------------------------------------#
-# [NEW] 리포트 생성 함수 (변수명 stocks로 통일)
+# [NEW] 리포트 생성 함수 (사용자 원본 프롬프트 복원 + 일관성 지침 추가)
 # -----------------------------------------------------------------------------------------------------------------------------#
-
-# [수정] 첫 번째 인자를 stock_data -> stocks 로 변경 (호출하는 곳과 이름 일치)
-def generate_report(stocks, general_news, channel_videos, trend_videos, video_url=None):
+def generate_report(stocks, general_news, channel_videos, trend_videos, video_url=None, economy_data=None):
     print("📝 CEO 맞춤형 심층 리포트 작성 중...")
     
-    # 1. [Section 0] 영상 섹션 HTML 생성
+    # 1. [Section 0] 영상 섹션 HTML (기존 동일)
     video_section_html = ""
     if video_url:
         video_section_html = f"""
         <h2>🎬 [Section 0] 오늘자 1분 요약 (Shorts)</h2>
         <p><b>💡 바쁘신 CEO를 위한 1분 브리핑:</b></p>
         <p>오늘의 핵심 이슈와 주가 변동 원인을 영상을 통해 빠르게 확인하세요.</p>
-        
         <div style="background-color: #f8f9fa; padding: 20px; border-radius: 10px; text-align: center; border: 1px solid #e9ecef; margin: 15px 0;">
             <a href="{video_url}" style="font-size: 20px; font-weight: bold; color: #c0392b; text-decoration: none;">
                 ▶️ 1분 브리핑 영상 재생하기 (Click)
@@ -523,22 +588,58 @@ def generate_report(stocks, general_news, channel_videos, trend_videos, video_ur
         </div>
         <hr style="border: 0; border-top: 1px dashed #ddd; margin: 30px 0;">
         """
-    elif not stocks: # [수정] 변수명 stock_data -> stocks
+    elif not stocks:
         video_section_html = """
         <h2>🎬 [Section 0] 오늘자 1분 요약</h2>
         <p><i>(오늘은 주식 시장 휴장일 또는 데이터 부족으로 영상이 생성되지 않았습니다.)</i></p>
         <hr>
         """
 
+    # [NEW] [Section 1] Market Dashboard (파이썬에서 직접 생성)
+    dashboard_html = ""
+    if economy_data:
+        fg_score = economy_data.get('fear_greed_index', 'N/A')
+        fg_state = economy_data.get('market_sentiment', '')
+        
+        # [핵심 수정] calendar가 문자열("N/A")로 오면 리스트로 변환하여 세로 출력 방지
+        calendar = economy_data.get('calendar', [])
+        if isinstance(calendar, str):
+            calendar = [calendar] # "N/A" -> ["N/A"]
+            
+        if not calendar: calendar = ["예정된 주요 일정이 없습니다."]
+
+        cal_items = "".join([f"<li style='margin-bottom:5px;'>{evt}</li>" for evt in calendar])
+        
+        dashboard_html = f"""
+        <h2>🗺️ [Section 1] Market Dashboard</h2>
+        <h3 style="margin-top: 20px;">1. Global Market Map</h3>
+        <div style="text-align:center; margin: 15px 0;">
+            <img src="cid:tradingview_map" alt="S&P 500 Heatmap" style="width:100%; max-width:600px; border-radius:10px; border:1px solid #ddd;">
+        </div>
+        
+        <div style="display: flex; gap: 20px; flex-wrap: wrap; margin-top:30px;">
+            <div style="flex: 1; background-color: #f8f9fa; padding: 15px; border-radius: 10px;">
+                <h4 style="margin: 0 0 10px 0;">🧠 Fear & Greed</h4>
+                <p style="font-size: 24px; font-weight: bold; color: #c0392b; margin: 0;">{fg_score}</p>
+                <p style="color: #666; margin: 0;">({fg_state})</p>
+            </div>
+            <div style="flex: 1; background-color: #f8f9fa; padding: 15px; border-radius: 10px;">
+                <h4 style="margin: 0 0 10px 0;">📅 Schedule</h4>
+                <ul style="padding-left: 20px; margin: 0;">{cal_items}</ul>
+            </div>
+        </div>
+        <hr style="border: 0; border-top: 1px dashed #ddd; margin: 30px 0;">
+        """
+
     # 2. AI 리포트 생성
     full_data = json.dumps({
-        "stocks"   : stocks, # [수정] 변수명 일치
+        "stocks"   : stocks, 
         "news"     : general_news,
         "channels" : channel_videos,
         "trends"   : trend_videos
     }, ensure_ascii=False)
 
-    # [프롬프트 유지] 
+    # [핵심] 사용자가 만족했던 그 프롬프트를 복원하되, 섹션 1 지침만 수정
     prompt = f"""
 당신은 바쁜 CEO를 위해 매일 아침 투자 보고서를 작성하는 **수석 투자 분석가**입니다.
 제공된 데이터를 기반으로, CEO가 **원본 링크를 클릭할 필요가 없을 정도로** 구체적이고 완결성 있는 HTML 리포트를 작성하세요.
@@ -554,11 +655,11 @@ def generate_report(stocks, general_news, channel_videos, trend_videos, video_ur
 
 ---
 
-[섹션 1: 📈 Global Market Insight (관심 종목 & 핵심 이슈)]
-- 관심 종목("stocks" 데이터)의 등락 원인을 **'육하원칙'**에 의거하여 명쾌하게 분석하여 3-4줄로 요약하세요.
-- 단순히 '올랐다'가 아니라, **'어떤 뉴스/실적/발언 때문에'** 움직였는지 명확하게 설명하세요.
+[섹션 2: 📈 Global Market Insight (관심 종목 & 핵심 이슈)]
+- **[중요]** 데이터에 포함된 **'email_summary'** 내용을 기반으로 작성하세요. (영상 내용과 일관성 유지 필수)
+- 각 종목의 등락 원인을 명쾌하게 정리하고, 등락률(change_str)을 포함하세요.
 
-[섹션 2: 📰 Deep Dive (주요 경제 뉴스 상세 분석)]
+[섹션 3: 📰 Deep Dive (주요 경제 뉴스 상세 분석)]
 - 해외 메이저 언론(Reuters, Bloomberg 등) 내용을 심층 분석합니다.
 - 형식:
   <h4>[키워드] 기사 헤드라인 (한국어)</h4>
@@ -570,7 +671,7 @@ def generate_report(stocks, general_news, channel_videos, trend_videos, video_ur
   <p style="font-size:0.9em; color:gray;">출처: <a href="URL">원문 읽기</a></p>
   <hr>
 
-[섹션 3: 📺 YouTube 채널 인사이트 (액기스 추출)]
+[섹션 4: 📺 YouTube 채널 인사이트 (액기스 추출)]
 - 영상 내용을 보지 않아도 핵심을 알 수 있게 정리하세요.
 - 형식:
   <h3>📺 [채널명] 영상 제목</h3>
@@ -581,7 +682,7 @@ def generate_report(stocks, general_news, channel_videos, trend_videos, video_ur
   <p><a href="URL">👉 영상 바로가기</a></p>
   <hr>
 
-[섹션 4: 🔥 Trending Now (핫이슈 영상)]
+[섹션 5: 🔥 Trending Now (핫이슈 영상)]
 - 설정된 키워드로 검색된 가장 핫한 영상을 분석합니다.
 - 형식:
   <h3>🔥 [키워드] 영상 제목 (채널명)</h3>
@@ -596,23 +697,46 @@ def generate_report(stocks, general_news, channel_videos, trend_videos, video_ur
 """
 
     try:
-        response        = model.generate_content(prompt)
-        ai_report_body  = response.text.replace("```html", "").replace("```", "").strip()
-        return video_section_html + ai_report_body
+        response       = model.generate_content(prompt)
+        ai_report_body = response.text.replace("```html", "").replace("```", "").strip()
+        
+        # [최종 조립] 영상(0) + 대시보드(1) + AI분석(2~5)
+        final_html     = f"""
+        <html>
+        <body style="font-family: 'Malgun Gothic', sans-serif; line-height: 1.6; color: #333;">
+            {video_section_html}
+            {dashboard_html}
+            {ai_report_body}
+            <div style="margin-top: 50px; font-size: 0.8em; color: #888; text-align: center;">
+                Generated by AI Daily Briefing Agent
+            </div>
+        </body>
+        </html>
+        """
+        return final_html
     
     except Exception as e:
-        return f"<p>리포트 생성 실패: {e}</p>"
+        print(f"⚠️ 리포트 생성 실패: {e}")
+        return f"<p>리포트 생성 중 오류 발생: {e}</p>"
 
 
-# ============================================================================================================================#
-# ---  SEND EMAIL
-# ============================================================================================================================#
 
-def send_email(recipients, html_body):
+# -----------------------------------------------------------------------------------------------------------------------------#
+# [통합] 이메일 발송 함수 (스타일 + 이미지 첨부 + BCC)
+# -----------------------------------------------------------------------------------------------------------------------------#
+def send_email(recipients, subject, html_body, attachment_path=None):
     if not recipients: return
+    
     print(f"📧 이메일 통합 발송 중 (수신자 {len(recipients)}명 - 비밀참조)...")
     
-    today = datetime.now().strftime("%Y-%m-%d")
+    # 1. 설정 로드
+    config = load_config()
+    sender_email = config['smtp_email']
+    sender_password = config['smtp_password']
+    
+    today_str = datetime.now().strftime("%Y-%m-%d")
+
+    # 2. HTML 스타일 및 래퍼 (기존 디자인 복원)
     style = """<style>
         body { font-family: 'Malgun Gothic', sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; }
         h2 { border-bottom: 2px solid #2c3e50; padding-bottom: 10px; color: #2c3e50; }
@@ -623,30 +747,54 @@ def send_email(recipients, html_body):
         a { text-decoration: none; color: #27ae60; font-weight: bold; }
         .footer { margin-top: 50px; border-top: 1px solid #eee; padding-top: 20px; text-align: center; color: #888; font-size: 12px; }
     </style>"""
-    full_html = f"<html><head>{style}</head><body><h2>📅 {today} 투자 리포트</h2>{html_body}<div class='footer'>Generated by Ivan Agent</div></body></html>"
+    
+    # 본문 조립 (헤더 + 본문 + 푸터)
+    full_html = f"""
+    <html>
+    <head>{style}</head>
+    <body>
+        <h2>📅 {today_str} 글로벌 증시 브리핑</h2>
+        {html_body}
+        <div class='footer'>Generated by AI Daily Briefing Agent</div>
+    </body>
+    </html>
+    """
 
+    # 3. 메시지 객체 생성 (MIMEMultipart 'related' 사용)
+    msg = MIMEMultipart('related')
+    msg['Subject'] = subject
+    msg['From'] = sender_email
+    msg['To'] = sender_email  # 받는 사람에는 보낸 사람 이메일 표시 (관례)
+    msg['Bcc'] = ", ".join(recipients) # 실제 수신자는 비밀참조로 숨김
+
+    # 4. HTML 본문 추가
+    msg_alternative = MIMEMultipart('alternative')
+    msg.attach(msg_alternative)
+    msg_alternative.attach(MIMEText(full_html, 'html'))
+
+    # 5. 이미지 첨부 (있을 경우)
+    if attachment_path and os.path.exists(attachment_path):
+        try:
+            with open(attachment_path, 'rb') as f:
+                img_data = f.read()
+            
+            image = MIMEImage(img_data)
+            # HTML의 <img src="cid:tradingview_map"> 와 매칭되는 ID
+            image.add_header('Content-ID', '<tradingview_map>') 
+            image.add_header('Content-Disposition', 'inline', filename="market_map.png")
+            msg.attach(image)
+            print("   📎 히트맵 이미지 첨부 완료")
+        except Exception as e:
+            print(f"⚠️ 이미지 첨부 중 에러: {e}")
+
+    # 6. 발송
     try:
-        with smtplib.SMTP('smtp.gmail.com', 587) as server:
-            server.starttls()
-            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-            
-            msg = MIMEText(full_html, 'html')
-            msg['Subject'] = f"[Insight] {today} 데일리 브리핑"
-            msg['From']    = EMAIL_SENDER
-            
-            # [수정 핵심]
-            # 1. 'To'에는 보내는 사람 본인 주소를 적습니다. (받는 사람에게는 'To: 보낸사람' 으로 보임)
-            msg['To'] = EMAIL_SENDER
-            
-            # 2. 실제 수신자 리스트는 'Bcc' (비밀참조)에 넣습니다.
-            # send_message 함수가 Bcc를 인식해서 발송하고, 헤더에서는 자동으로 지워줍니다.
-            msg['Bcc'] = ", ".join(recipients)
-            
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(sender_email, sender_password)
             server.send_message(msg)
-            
-        print("✅ 이메일 발송 완료 (비밀참조 처리됨)")
+        print("✅ 이메일 발송 성공")
     except Exception as e:
-        print(f"❌ 이메일 실패: {e}")
+        print(f"❌ 이메일 발송 실패: {e}")
 
 
 
@@ -677,7 +825,7 @@ def html_to_slack_text(html_content):
     text = re.sub(r'<h[1-6]>(.*?)</h[1-6]>', r'\n\n*\1*\n', text)
     
     # 5. 리스트 처리 (<li> -> •)
-    text = text.replace("<ul>", "").replace("</ul>", "")
+    text = text.replace("<ul>", ""  ).replace("</ul>", "")
     text = text.replace("<li>", "• ").replace("</li>", "\n")
     
     # 6. 굵게 처리
@@ -711,13 +859,13 @@ def send_slack(webhook_url, html_body):
         print("⚠️ 슬랙 URL이 설정되지 않음")
         return
 
-    today = datetime.now().strftime("%Y-%m-%d")
+    today      = datetime.now().strftime("%Y-%m-%d")
     # HTML을 보기 좋은 텍스트로 변환
     slack_text = f"📅 *{today} 데일리 투자 리포트*\n\n" + html_to_slack_text(html_body)
     
     # 슬랙은 메시지가 너무 길면 잘릴 수 있으므로 주의 (4000자 제한 등)
     # 여기서는 간단히 텍스트로 보냅니다.
-    payload = {"text": slack_text}
+    payload    = {"text": slack_text}
     
     try:
         response = requests.post(webhook_url, json=payload)
@@ -804,6 +952,9 @@ def cleanup_files():
 # job (Final: Full Automation)
 # -----------------------------------------------------------------------------------------------------------------------------#
 
+# -----------------------------------------------------------------------------------------------------------------------------#
+# job (Final: Full Automation)
+# -----------------------------------------------------------------------------------------------------------------------------#
 def job():
     print(f"\n🚀 [Final] 데일리 브리핑 시작: {datetime.now()}")
     
@@ -815,72 +966,82 @@ def job():
         print("❌ 설정 파일(config.json)을 찾을 수 없습니다.")
         return
     
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str        = datetime.now().strftime("%Y-%m-%d")
     
     # 1. 데이터 수집
-    stocks = collect_stock_data(config.get('stock_tickers', []))
-    general_news = fetch_news_raw(config.get('news_keywords', []), limit=5)
+    stocks           = collect_stock_data(config.get('stock_tickers', []))
+    general_news     = fetch_news_raw(config.get('news_keywords', []), limit=5)
+    channel_videos   = collect_channel_youtube_data(config.get('youtube_channels', {}))
+    trend_videos     = collect_keyword_youtube_data(config.get('youtube_keywords', []))    
+    all_youtube      = channel_videos + trend_videos
+    economy_news_raw = collect_economy_data()
     
-    channel_videos = collect_channel_youtube_data(config.get('youtube_channels', {}))
-    trend_videos = collect_keyword_youtube_data(config.get('youtube_keywords', []))
-    
-    all_youtube = channel_videos + trend_videos
-    
-    # 데이터가 하나라도 있으면 진행
     if stocks or general_news or all_youtube:
         try:
+            # [수정 1] 변수 미리 초기화 (에러 방지용)
+            video_url = None 
+            
             # 2. 콘텐츠 요약 생성
-            stocks, general_news, all_youtube = analyze_and_summarize(stocks, general_news, all_youtube)
+            stocks, general_news, all_youtube, economy_data, generated_scripts = analyze_and_summarize(stocks, general_news, all_youtube, economy_news_raw)
             
-            # 3. 영상 대본 작성
-            script_plan = plan_video_script(stocks, general_news, all_youtube)
+            video_title = "글로벌 증시 브리핑"
+            print(f"🎬 대본 및 콘텐츠 확정: {video_title}")
             
-            video_url = None
-            
-            if script_plan:
-                print(f"🎬 대본 및 콘텐츠 확정: {script_plan.get('title', '제목 없음')}")
-                
-                structured_data = {
-                    'stocks'  : stocks,
-                    'news'    : general_news,
-                    'youtube' : all_youtube
-                }
+            structured_data = {
+                'stocks'  : stocks,
+                'news'    : general_news,
+                'youtube' : all_youtube,
+                'economy' : economy_data
+            }
 
-                # 4. 영상 제작 (video_studio 모듈이 있다고 가정)
-                # 주의: video_studio.make_video_module 함수가 실제로 존재해야 합니다.
-                if hasattr(video_studio, 'make_video_module'):
-                    video_file = video_studio.make_video_module(
-                        scene_scripts   = script_plan, 
-                        structured_data = structured_data,
-                        date_str        = today_str
-                    )
-                    
-                    # 5. 유튜브 업로드
-                    if video_file and os.path.exists(video_file):
-                        print("📤 유튜브 업로드 시작...")
-                        # 리포트 생성 시 video_url은 아직 None
-                        temp_report = generate_report(stocks, general_news, channel_videos, trend_videos, video_url=None)
-                        desc_text   = html_to_youtube_description(temp_report)
-                        
-                        video_url = youtube_manager.upload_short(
-                            video_file, 
-                            title       = datetime.now().strftime("%Y-%m-%d일자-") +script_plan['title'], 
-                            description = desc_text
-                        )
-                        print(f"✅ 업로드 완료: {video_url}")
-                    else:
-                        print("⚠️ 생성된 영상 파일이 없거나 video_studio에서 반환되지 않았습니다.")
-                else:
-                    print("⚠️ video_studio 모듈에 'make_video_module' 함수가 구현되지 않았습니다.")
+            # 4. 영상 제작
+            map_image_path = "tradingview_map.png" # 캡처된 파일명 예상
+
+            if hasattr(video_studio, 'make_video_module'):
+                video_file = video_studio.make_video_module(
+                    scene_scripts   = generated_scripts, 
+                    structured_data = structured_data,
+                    date_str        = today_str
+                )                
                 
-                # 6. 메일 및 슬랙 발송 (영상 URL 포함)
-                if video_url:
-                     print("📧 리포트 배포 준비...")
-                     report = generate_report(stocks, general_news, channel_videos, trend_videos, video_url)
-                     send_email(config.get('email_recipients', []), report)
-                     send_slack(config.get('slack_webhook_url'), report)
+                # 영상 완료 후 맵 이미지가 생성되었는지 확인 (video_studio 내부에서 capture 수행함)
+                if not os.path.exists(map_image_path):
+                    print("⚠️ 맵 이미지를 찾을 수 없음. 메일 첨부 실패 가능성.")
+
+                # 5. 유튜브 업로드
+                if video_file and os.path.exists(video_file):
+                    
+                    print("📤 유튜브 업로드 시작...")
+                    temp_report = generate_report(stocks, general_news, channel_videos, trend_videos, video_url=None, economy_data=economy_data)
+                    desc_text   = html_to_youtube_description(temp_report)
+                        
+                    video_url = youtube_manager.upload_short(
+                        video_file, 
+                        title       = f"{today_str}일자- {video_title}", 
+                        description = desc_text
+                    )
+                    print(f"✅ 업로드 완료: {video_url}")
                 else:
-                    print("⚠️ 영상 업로드가 되지 않아 리포트 발송을 건너뜁니다 (또는 실패 시 발송 옵션 필요).")
+                    print("⚠️ 생성된 영상 파일이 없거나 video_studio에서 반환되지 않았습니다.")
+            else:
+                print("⚠️ video_studio 모듈 오류: make_video_module 함수가 없습니다.")
+            
+            # 6. 메일 및 슬랙 발송
+            # video_url이 None이어도 안전하게 체크
+            if video_url:
+                print("📧 리포트 배포 준비...")
+                report = generate_report(stocks, general_news, channel_videos, trend_videos, video_url, economy_data=economy_data)
+                # [수정된 호출 방식]
+                # 인자 순서: 수신자목록, 제목, HTML본문, 첨부파일경로
+                send_email(
+                    config.get('email_recipients', []), 
+                    f"[Insight] {today_str} 글로벌 증시 브리핑", 
+                    report, 
+                    attachment_path="tradingview_map.png" # video_studio가 만든 이미지
+                )
+                
+            else:
+                print("⚠️ 영상 URL 없음. 리포트 발송 스킵.")
 
         except Exception as e:
             print(f"⚠️ 전체 프로세스 중 에러: {e}")
@@ -888,7 +1049,7 @@ def job():
             traceback.print_exc()
             
     else:
-        print("💤 수집된 데이터가 없습니다. (휴일이거나 API 오류)")
+        print("💤 수집된 데이터가 없습니다.")
 
     print("🏁 [Final] 모든 작업 완료\n")
 

@@ -113,65 +113,84 @@ def create_title_strip(text, fontsize=45, bg_color=(0,0,0), text_color='white', 
 # External Data Capture (Selenium & Matplotlib)
 # -----------------------------------------------------------------------------------------------------------------------------#
 def capture_finviz_map(output_file="finviz_map.png"):
-    print("📸 Finviz 맵 캡처 시도 중... (Bot 회피 모드)", flush=True)
+    print("📸 Finviz 맵 캡처 시도 (Docker 안정화 모드)...", flush=True)
     driver = None
     try:
         chrome_options = Options()
         
-        # [핵심 1] Headless 모드 설정 (최신 방식)
-        # --headless=new 는 기존 headless보다 탐지가 더 어렵습니다.
+        # [1] 시스템에 설치된 Chromium 바이너리 위치 지정 (Docker 환경 필수)
+        # apt-get install chromium으로 설치된 경로는 보통 아래와 같습니다.
+        chrome_options.binary_location = "/usr/bin/chromium"
+
+        # [2] Headless 및 봇 탐지 회피 설정
         chrome_options.add_argument('--headless=new') 
+        chrome_options.add_argument('--no-sandbox')
+        chrome_options.add_argument('--disable-dev-shm-usage') # 메모리 공유 에러 방지
+        chrome_options.add_argument('--disable-gpu')
         
-        # [핵심 2] 리얼 유저인 척하는 User-Agent 설정
+        # [3] 타임아웃 방지 핵심 옵션 (연결 안정화)
+        chrome_options.add_argument('--remote-debugging-port=9222') 
+        chrome_options.add_argument('--disable-software-rasterizer')
+        chrome_options.add_argument('--window-size=1920,1080')
+
+        # [4] User-Agent 설정
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         chrome_options.add_argument(f'user-agent={user_agent}')
-        
-        # [핵심 3] 자동화 감지 플래그 제거
-        # "navigator.webdriver" 속성을 숨겨서 봇임을 들키지 않게 함
-        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        chrome_options.add_experimental_option('useAutomationExtension', False)
-        
-        # [기본 설정] Docker 환경 안정성
-        chrome_options.add_argument('--no-sandbox')
-        chrome_options.add_argument('--disable-dev-shm-usage')
-        chrome_options.add_argument('--window-size=1920,1080')
-        chrome_options.add_argument('--start-maximized')
-        chrome_options.add_argument('--disable-gpu')
 
-        driver = webdriver.Chrome(options=chrome_options)
+        # [5] 드라이버 설정 (시스템에 설치된 chromedriver 사용 권장)
+        # Dockerfile에서 apt-get install chromium-driver를 했다면 경로는 /usr/bin/chromedriver 입니다.
+        # webdriver_manager 대신 시스템 드라이버를 쓰는 것이 버전 충돌을 막습니다.
+        if os.path.exists("/usr/bin/chromedriver"):
+            service = ChromeService(executable_path="/usr/bin/chromedriver")
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+        else:
+            # 로컬 테스트용 (webdriver_manager 사용)
+            from webdriver_manager.chrome import ChromeDriverManager
+            service = ChromeService(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+
+        # [6] 페이지 로딩 타임아웃 설정 (30초 지나면 에러 발생시키고 다음으로 넘어감)
+        driver.set_page_load_timeout(30)
         
-        # [핵심 4] 탐지 우회를 위한 스크립트 실행
+        # 탐지 우회 스크립트
         driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
         print("   🌐 Finviz 접속 중...", flush=True)
-        driver.get("https://finviz.com/map.ashx")
-        
-        # [핵심 5] 로딩 대기 시간 충분히 부여 (Cloudflare 검증 시간 확보)
-        time.sleep(10) 
-        
-        # (선택) 팝업이나 쿠키 동의 버튼이 있다면 닫는 로직 추가 가능
+        try:
+            driver.get("https://finviz.com/map.ashx")
+        except Exception as e:
+            print(f"   ⚠️ 페이지 로딩 시간 초과 또는 접속 에러 (무시하고 캡처 시도): {e}")
+
+        # 로딩 대기 (Cloudflare 통과 시간)
+        time.sleep(10)
         
         driver.save_screenshot(output_file)
         
         if os.path.exists(output_file):
             img = Image.open(output_file)
             width, height = img.size
-            # 하단 광고 영역 잘라내기
             cropped_img = img.crop((0, 0, width, int(height * 0.85)))
             cropped_img.save(output_file)
             print("   ✅ 캡처 및 저장 완료", flush=True)
-            
-        return output_file
-        
+            return output_file
+        else:
+            print("   ⚠️ 파일이 생성되지 않았습니다.", flush=True)
+            return None
+
     except Exception as e:
         print(f"⚠️ 캡처 실패: {e}", flush=True)
-        # 실패 시 캡처 파일이 없으면 None 반환
         return None
     finally:
-        if driver: driver.quit()
+        if driver:
+            try:
+                driver.quit()
+            except:
+                pass
 
 
+# -----------------------------------------------------------------------------------------------------------------------------#
+# Data Processing & Visualization (Matplotlib)
+# -----------------------------------------------------------------------------------------------------------------------------#
 def create_chart_image(symbol):
     """특정 종목의 1일 차트 생성 (Matplotlib)"""
     print(f"📊 차트 생성 시도: {symbol}", flush=True)
@@ -226,11 +245,13 @@ def create_chart_image(symbol):
         print(f"   ⚠️ 차트 에러: {e}", flush=True)
         return None, None
 
+
 # -----------------------------------------------------------------------------------------------------------------------------#
 # Scene Generators
 # -----------------------------------------------------------------------------------------------------------------------------#
 
-# [SCENE 1] Market Overview
+# [SCENE 1] Market Overview ---------------------------------------------------------------------
+
 def create_scene_market(script_text, date_str, is_market_closed):
     print(f"🎬 Scene 1: Market Overview (Closed? {is_market_closed})", flush=True)
     
@@ -260,7 +281,8 @@ def create_scene_market(script_text, date_str, is_market_closed):
 
     return CompositeVideoClip(clips).set_audio(audio_clip)
 
-# [SCENE 2] News (Standard)
+# [SCENE 2] News ---------------------------------------------------------------------
+
 def create_scene_news(script_text, news_list, date_str):
     print("🎬 Scene 2: News", flush=True)
     
@@ -290,7 +312,9 @@ def create_scene_news(script_text, news_list, date_str):
 
     return CompositeVideoClip(clips).set_audio(audio_clip)
 
-# [SCENE 3] Market Watchlist (Handles Closed Market)
+
+# [SCENE 3] Market Watchlist (Handles Closed Market) -------------------------------------
+
 def create_scene_stock_list(script_text, all_stocks, date_str, is_market_closed):
     print(f"🎬 Scene 3: Stock List (Closed? {is_market_closed})", flush=True)
     
@@ -344,7 +368,9 @@ def create_scene_stock_list(script_text, all_stocks, date_str, is_market_closed)
 
     return CompositeVideoClip(clips).set_audio(audio_clip)
 
-# [SCENE 4] Stock Chart (Handles Closed Market)
+
+# [SCENE 4] Stock Chart (Handles Closed Market) -------------------------------------
+
 def create_scene_stock_chart(script_text, stock_data, date_str, is_market_closed):
     symbol = stock_data.get('symbol', 'INDEX')
     print(f"🎬 Scene 4: Analysis ({symbol})", flush=True)
@@ -384,7 +410,9 @@ def create_scene_stock_chart(script_text, stock_data, date_str, is_market_closed
 
     return CompositeVideoClip(clips).set_audio(audio_clip)
 
-# [SCENE 5] YouTube Insight
+
+# [SCENE 5] YouTube Insight -------------------------------------
+
 def create_scene_youtube(script_text, youtube_list, date_str):
     print("🎬 Scene 5: YouTube Insight", flush=True)
     
@@ -414,7 +442,9 @@ def create_scene_youtube(script_text, youtube_list, date_str):
 
     return CompositeVideoClip(clips).set_audio(audio_clip)
 
-# [SCENE 6] Outro (With Disclaimer)
+
+# [SCENE 6] Outro (With Disclaimer) -------------------------------------
+
 def create_scene_outro(script_text, stocks, keywords, youtube, date_str):
     print("🎬 Scene 6: Outro", flush=True)
     
@@ -455,6 +485,7 @@ def create_scene_outro(script_text, stocks, keywords, youtube, date_str):
                  .set_position(('center', 600)).set_duration(duration))
 
     return CompositeVideoClip(clips).set_audio(audio_clip)
+
 
 # -----------------------------------------------------------------------------------------------------------------------------#
 # Main Module Entry
@@ -530,4 +561,5 @@ def make_video_module(scene_scripts, structured_data, date_str):
     
     print(f"✅ 영상 제작 완료: {output_filename}", flush=True)
     return output_filename
+    
 # -----------------------------------------------------------------------------------------------------------------------------#

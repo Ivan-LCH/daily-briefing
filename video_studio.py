@@ -1,8 +1,3 @@
-
-# -----------------------------------------------------------------------------------------------------------------------------#
-# [IMPORTS]
-# -----------------------------------------------------------------------------------------------------------------------------#
-
 import os
 import sys
 import time
@@ -23,13 +18,10 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
-# -----------------------------------------------------------------------------------------------------------------------------#
 # [LOGGING FIX]
-# -----------------------------------------------------------------------------------------------------------------------------#
 sys.stdout.reconfigure(line_buffering=True)
 if os.name != 'nt':
     change_settings({"IMAGEMAGICK_BINARY": "/usr/bin/convert"})
-
 
 # -----------------------------------------------------------------------------------------------------------------------------#
 # [CORE] Safety Text System
@@ -62,14 +54,13 @@ def create_safe_text_clip(text, **kwargs):
         return ColorClip(size=(10, 10), color=(0,0,0)).set_opacity(0).set_duration(kwargs.get('duration', 1))
 
 # -----------------------------------------------------------------------------------------------------------------------------#
-# [NEW] Dynamic Audio & Subtitle Generator (자막 싱크 핵심)
+# [NEW] Dynamic Audio & Subtitle Generator
 # -----------------------------------------------------------------------------------------------------------------------------#
 async def _gen_voice_file(text, filename):
     communicate = edge_tts.Communicate(text, "ko-KR-SunHiNeural")
     await communicate.save(filename)
 
 def generate_dynamic_audio_and_subs(script_text, scene_name):
-    # 문장 단위 분리 (마침표, 물음표, 느낌표 기준)
     sentences = re.split(r'(?<=[.?!])\s+', script_text.strip())
     sentences = [s for s in sentences if s.strip()]
     
@@ -91,7 +82,6 @@ def generate_dynamic_audio_and_subs(script_text, scene_name):
             aclip = AudioFileClip(fname)
             dur = aclip.duration
             
-            # 자막바 (검은 반투명)
             bar_h = 100
             bar_y = 720 - bar_h
             bg_bar = ColorClip(size=(1280, bar_h), color=(0,0,0))\
@@ -100,9 +90,9 @@ def generate_dynamic_audio_and_subs(script_text, scene_name):
                      .set_start(current_time)\
                      .set_duration(dur)
             
-            # 자막 텍스트
+            # 자막 위치 상향 조정 (bar_y + 10)
             txt_clip = create_safe_text_clip(sent, fontsize=28, color='white', method='caption', size=(1200, None))\
-                       .set_position(('center', bar_y + 25))\
+                       .set_position(('center', bar_y + 10))\
                        .set_start(current_time)\
                        .set_duration(dur)
             
@@ -121,12 +111,21 @@ def generate_dynamic_audio_and_subs(script_text, scene_name):
     return final_audio, text_clips
 
 # -----------------------------------------------------------------------------------------------------------------------------#
-# Helper Functions
+# Helper Functions (FIXED)
 # -----------------------------------------------------------------------------------------------------------------------------#
 def create_date_stamp(date_str, duration):
     if not date_str: return None
-    return create_safe_text_clip(f"Date: {date_str}", fontsize=24, color='#888888', align='East')\
-           .set_position((1080, 30)).set_duration(duration)
+    
+    # [수정 완료] 람다 함수 제거 -> 고정 좌표 계산 방식 적용
+    # 1. 텍스트 클립 생성
+    txt_clip = create_safe_text_clip(f"Date: {date_str}", fontsize=24, color='#888888', align='East')
+    
+    # 2. 너비(w)를 미리 구해서 x좌표 계산 (1280 - 너비 - 40)
+    # TextClip은 생성되자마자 w 속성을 가집니다.
+    x_pos = 1280 - txt_clip.w - 40
+    
+    # 3. 계산된 좌표 적용
+    return txt_clip.set_position((x_pos, 30)).set_duration(duration)
 
 def create_title_strip(text, fontsize=45, bg_color=(0,0,0), text_color='white', position=('center', 40), duration=5):
     strip_bg = ColorClip(size=(1280, 110), color=bg_color)\
@@ -217,7 +216,8 @@ def create_chart_image(symbol):
         color_trend = '#ff3333' if diff > 0 else '#3366ff'
 
         plt.style.use('dark_background')
-        fig, ax = plt.subplots(figsize=(10, 8))
+        fig, ax = plt.subplots(figsize=(12, 8)) # 차트 폭 확대 유지
+        
         ax.set_facecolor('#121212')
         fig.patch.set_facecolor('#000000')
         ax.plot(hist.index, hist['Close'], color=color_trend, linewidth=2.5)
@@ -241,32 +241,26 @@ def create_chart_image(symbol):
 
 
 # -----------------------------------------------------------------------------------------------------------------------------#
-# Scene Generators (Final Updated)
+# Scene Generators
 # -----------------------------------------------------------------------------------------------------------------------------#
 
-# -----------------------------------------------------------------------------------------------------------------------------#
-# [SCENE 1] Market Map (높이 강제 축소로 자막 겹침 해결)
-# -----------------------------------------------------------------------------------------------------------------------------#
+# [SCENE 1] Market Map
 def create_scene_market(script_text, date_str, is_market_closed, economy_data=None):
     print(f"🎬 Scene 1: Market Overview", flush=True)
     audio, subtitle_clips = generate_dynamic_audio_and_subs(script_text, "scene1")
     if not audio: return None
     
     duration = audio.duration + 1.0
-    
     clips    = build_scene_base(duration, "Global Market Map", None) 
     
     if is_market_closed:
         msg = "미국 증시 휴장 (Market Closed)"
         clips.append(create_safe_text_clip(msg, fontsize=50, color='gray').set_position('center').set_duration(duration))
     else:
-        # 1. Condition 텍스트
         sector_txt = economy_data.get('sector_summary', "Market Trend Analysis") if economy_data else "Market Trend Analysis"
         clips.append(create_safe_text_clip(f"Condition: {sector_txt}", fontsize=26, color='#ffdd55')
                      .set_position(('center', 110)).set_duration(duration))
 
-        # 2. 맵 이미지 (높이 강제 고정: 380px)
-        # 1280x720에서 자막바가 620부터 시작하므로, 150+380 = 530선에서 끊어야 안전함
         map_img = capture_tradingview_map()
         if map_img and os.path.exists(map_img):
             img_clip = ImageClip(map_img).resize(height=380).set_position(('center', 160)).set_duration(duration)
@@ -277,9 +271,7 @@ def create_scene_market(script_text, date_str, is_market_closed, economy_data=No
     return CompositeVideoClip(clips + subtitle_clips).set_audio(audio)
 
 
-# -----------------------------------------------------------------------------------------------------------------------------#
 # [SCENE 2] News
-# -----------------------------------------------------------------------------------------------------------------------------#
 def create_scene_news(script_text, news_list, date_str):
     print("🎬 Scene 2: News", flush=True)
     audio, subtitle_clips = generate_dynamic_audio_and_subs(script_text, "scene2")
@@ -304,9 +296,7 @@ def create_scene_news(script_text, news_list, date_str):
         start_y += (current_h + s_clip.h + 25)
     return CompositeVideoClip(clips + subtitle_clips).set_audio(audio)
 
-# -----------------------------------------------------------------------------------------------------------------------------#
 # [SCENE 2.5] Economy
-# -----------------------------------------------------------------------------------------------------------------------------#
 def create_scene_economy(script_text, economy_data):
     print("🎬 Scene 2.5: Economy", flush=True)
     audio, subtitle_clips = generate_dynamic_audio_and_subs(script_text, "scene2_5")
@@ -338,9 +328,7 @@ def create_scene_economy(script_text, economy_data):
         clips.append(create_safe_text_clip(f"({fg_state})", fontsize=35, color='#cccccc').set_position((820, 350)).set_duration(duration))
     return CompositeVideoClip(clips + subtitle_clips).set_audio(audio)
 
-# -----------------------------------------------------------------------------------------------------------------------------#
 # [SCENE 3] Stock List
-# -----------------------------------------------------------------------------------------------------------------------------#
 def create_scene_stock_list(script_text, all_stocks, date_str, is_market_closed):
     print(f"🎬 Scene 3: Stock List", flush=True)
     audio, subtitle_clips = generate_dynamic_audio_and_subs(script_text, "scene3")
@@ -368,9 +356,7 @@ def create_scene_stock_list(script_text, all_stocks, date_str, is_market_closed)
     return CompositeVideoClip(clips + subtitle_clips).set_audio(audio)
 
 
-# -----------------------------------------------------------------------------------------------------------------------------#
 # [SCENE 4] Chart
-# -----------------------------------------------------------------------------------------------------------------------------#
 def create_scene_stock_chart(script_text, stock_data, date_str, is_market_closed):
     symbol = stock_data.get('symbol', 'INDEX')
     print(f"🎬 Scene 4: Analysis ({symbol})", flush=True)
@@ -388,14 +374,13 @@ def create_scene_stock_chart(script_text, stock_data, date_str, is_market_closed
             clips.append(create_safe_text_clip(f"{symbol} / USD", fontsize=25, color='#888888').set_position((left_x, base_y)).set_duration(duration))
             clips.append(create_safe_text_clip(price, fontsize=80, color='white').set_position((left_x, base_y + 40)).set_duration(duration))
             clips.append(create_safe_text_clip(change_str, fontsize=40, color=color).set_position((left_x, base_y + 140)).set_duration(duration))
+            # 차트 높이 450 유지, 폭은 이미지 비율에 따라 자동 조절됨 (생성 시 12:8 비율)
             chart_clip = ImageClip(chart_img).resize(height=450).set_position((520, 160)).set_duration(duration)
             clips.append(chart_clip)
     return CompositeVideoClip(clips + subtitle_clips).set_audio(audio)
 
 
-# -----------------------------------------------------------------------------------------------------------------------------#
 # [SCENE 5] YouTube
-# -----------------------------------------------------------------------------------------------------------------------------#
 def create_scene_youtube(script_text, youtube_list, date_str):
     print("🎬 Scene 5: YouTube", flush=True)
     audio, subtitle_clips = generate_dynamic_audio_and_subs(script_text, "scene5")
@@ -416,9 +401,7 @@ def create_scene_youtube(script_text, youtube_list, date_str):
         start_y += max(ch_clip.h, txt_clip.h) + 35
     return CompositeVideoClip(clips + subtitle_clips).set_audio(audio)
 
-# -----------------------------------------------------------------------------------------------------------------------------#
-# [SCENE 6] Outro (데이터 누락 해결)
-# -----------------------------------------------------------------------------------------------------------------------------#
+# [SCENE 6] Outro
 def create_scene_outro(script_text, stocks, news_list, youtube, date_str):
     print("🎬 Scene 6: Outro", flush=True)
     audio, subtitle_clips = generate_dynamic_audio_and_subs(script_text, "scene6")
@@ -436,12 +419,10 @@ def create_scene_outro(script_text, stocks, news_list, youtube, date_str):
     stock_names = [s['symbol'] for s in stocks[:5]] if stocks else ["N/A"]
     clips.append(create_safe_text_clip(f"• Stocks : {', '.join(stock_names)}", fontsize=30, color='#cccccc').set_position((left_x, y_pos)).set_duration(duration))
     
-    # 2. Keywords (뉴스 제목에서 키워드 추출 대신 제목 앞부분 사용)
-    # news_list가 비어있을 경우 대비
+    # 2. Keywords
     keywords = ["Global Market", "Economy"]
     if news_list:
-        keywords = [n.get('title', '').split()[0] for n in news_list[:3]] # 첫 단어만 추출
-        
+        keywords = [n.get('title', '').split()[0] for n in news_list[:3]]
     keyword_str = ", ".join(keywords)
     clips.append(create_safe_text_clip(f"• Keywords : {keyword_str}", fontsize=30, color='#cccccc').set_position((left_x, y_pos + 60)).set_duration(duration))
     
@@ -450,16 +431,13 @@ def create_scene_outro(script_text, stocks, news_list, youtube, date_str):
     channel_str = ", ".join(channels)
     clips.append(create_safe_text_clip(f"• Channels : {channel_str}", fontsize=30, color='#cccccc').set_position((left_x, y_pos + 120)).set_duration(duration))
 
-    # Disclaimer 상단 이동 (자막 겹침 방지)
     disclaimer = """⚠️ 알림 (Disclaimer)\n이 영상은 AI를 통해 자동 생성되었습니다. 투자의 책임은 본인에게 있습니다.\n(Data: Yahoo Finance / Analysis: Gemini / Voice: Edge-TTS)"""
     clips.append(create_safe_text_clip(disclaimer, fontsize=20, color='#555555', align='center').set_position(('center', 480)).set_duration(duration))
 
     return CompositeVideoClip(clips + subtitle_clips).set_audio(audio)
 
 
-# -----------------------------------------------------------------------------------------------------------------------------#
-# [MAIN] Module (Outro 호출부 수정)
-# -----------------------------------------------------------------------------------------------------------------------------#
+# [MAIN] Module
 def make_video_module(scene_scripts, structured_data, date_str):
     print("\n🚀 [Video Studio] 영상 제작 시작...", flush=True)
     stocks  = structured_data.get('stocks', [])
@@ -467,16 +445,11 @@ def make_video_module(scene_scripts, structured_data, date_str):
     youtube = structured_data.get('youtube', [])
     economy = structured_data.get('economy', {})
     
-    # ... (Scene 1~5 호출 코드는 기존과 동일, 생략) ...
-    # ... Scene 1~5 코드는 그대로 두세요 ...
-    
     final_clips = []
     
-    # Scene 1
-    s1 = create_scene_market(scene_scripts.get('scene1', '시장 동향입니다.'), date_str, False, economy) # is_market_closed 로직은 위에서 처리했다고 가정
+    s1 = create_scene_market(scene_scripts.get('scene1', '시장 동향입니다.'), date_str, False, economy)
     if s1: final_clips.append(s1)
 
-    # ... (Scene 2~5 추가 로직 동일) ...
     s2 = create_scene_news(scene_scripts.get('scene2', '뉴스'), news, date_str)
     if s2: final_clips.append(s2)
     
@@ -493,7 +466,6 @@ def make_video_module(scene_scripts, structured_data, date_str):
     s5 = create_scene_youtube(scene_scripts.get('scene5', '유튜브'), youtube, date_str)
     if s5: final_clips.append(s5)
 
-    # [수정] Scene 6에 news 리스트 전달
     s6 = create_scene_outro(scene_scripts.get('scene6', '감사합니다.'), stocks, news, youtube, date_str)
     if s6: final_clips.append(s6)
 
@@ -506,5 +478,3 @@ def make_video_module(scene_scripts, structured_data, date_str):
     final_video.write_videofile(output_filename, fps=24, codec='libx264', audio_codec='aac', threads=4, logger=None)
     print(f"✅ 영상 제작 완료: {output_filename}", flush=True)
     return output_filename
-
-# -----------------------------------------------------------------------------------------------------------------------------#

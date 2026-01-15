@@ -1,13 +1,10 @@
-# 베이스 이미지 (Python 3.11)
+# [Dockerfile]
+
 FROM python:3.11-slim
 
-# 작업 디렉토리 설정
 WORKDIR /app
 
-# 1. 필수 시스템 패키지 설치
-# findutils: find 명령어 사용을 위해 필요
-# imagemagick, ffmpeg: 영상 처리를 위해 필수
-# fonts-noto-cjk: 한글 폰트 지원
+# 1. 패키지 설치
 RUN apt-get update && apt-get install -y \
     chromium \
     chromium-driver \
@@ -20,19 +17,26 @@ RUN apt-get update && apt-get install -y \
     findutils \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. [핵심] ImageMagick 보안 정책 완화 (MoviePy 텍스트 에러 해결)
-# MoviePy는 텍스트를 임시 파일(@)로 저장해서 읽는데, 최신 ImageMagick은 이를 차단함.
-# 이를 허용(read|write)하도록 policy.xml을 찾아서 수정합니다.
-RUN find /etc -name "policy.xml" -exec sed -i 's/rights="none" pattern="@\*"/rights="read|write" pattern="@*"/g' {} + && \
-    find /etc -name "policy.xml" -exec sed -i 's/rights="none" pattern="PDF"/rights="read|write" pattern="PDF"/g' {} +
+# 2. [핵심] policy.xml 위치를 찾아내서 'read|write' 권한으로 덮어쓰기
+# 경로가 /etc/ImageMagick-6/ 이든 /etc/ImageMagick/ 이든 상관없이 작동합니다.
+RUN find /etc -name "policy.xml" -exec sh -c 'echo "<policymap>\n\
+  <policy domain=\"resource\" name=\"memory\" value=\"256MiB\"/>\n\
+  <policy domain=\"resource\" name=\"map\" value=\"512MiB\"/>\n\
+  <policy domain=\"resource\" name=\"width\" value=\"16KP\"/>\n\
+  <policy domain=\"resource\" name=\"height\" value=\"16KP\"/>\n\
+  <policy domain=\"resource\" name=\"area\" value=\"128MB\"/>\n\
+  <policy domain=\"resource\" name=\"disk\" value=\"1GiB\"/>\n\
+  <policy domain=\"delegate\" rights=\"none\" pattern=\"URL\" />\n\
+  <policy domain=\"delegate\" rights=\"none\" pattern=\"HTTPS\" />\n\
+  <policy domain=\"delegate\" rights=\"none\" pattern=\"HTTP\" />\n\
+  <policy domain=\"path\" rights=\"read|write\" pattern=\"@*\" />\n\
+</policymap>" > {}' \;
 
-# 3. Python 라이브러리 설치
+# 3. 파이썬 라이브러리 설치
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 4. 소스 코드 복사
+# 4. 소스 복사
 COPY . .
 
-# 5. 실행 명령어
-# -u 옵션: 로그를 버퍼링 없이 즉시 출력 (실시간 확인 용이)
 CMD ["python", "-u", "agent.py"]

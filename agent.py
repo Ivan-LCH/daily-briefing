@@ -783,10 +783,10 @@ def analyze_and_summarize(stocks, news, youtube, economy_news):
     [JSON 형식]
     {{
         "scene4_target_symbol": "TSLA",
-        "stock_details": [ ... ],
-        "economic_insight": {{ ... }},
-        "news_items": [ ... ],
-        "youtube_items": [ ... ],
+        "stock_details": [ {{"symbol": "AAPL", "video_summary": "...", "email_summary": "..."}} ],
+        "economic_insight": {{ "fear_greed_index": 65, "market_sentiment": "Greed", "calendar": [...], "sector_summary": "..." }},
+        "news_items": [ {{"title": "...", "detail": "..."}} ],
+        "youtube_items": [ {{"summary": "영상 핵심 요약 1~2문장"}} ],
         "scripts": {{
             "scene1": "...",
             "scene2": "...",

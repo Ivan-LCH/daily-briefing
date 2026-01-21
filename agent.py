@@ -5,42 +5,42 @@
 # 각 라이브러리는 특정 기능을 담당하며, 데이터 수집, AI 분석, 영상 제작, 메일 발송 등의 역할을 수행합니다.
 # -----------------------------------------------------------------------------------------------------------------------------#
 
-import os              # 운영체제 환경 변수 접근 및 파일 시스템 관련 기능 제공
-import time            # 시간 지연(sleep) 및 타이밍 관련 기능 제공
-import json            # JSON 데이터 파싱 및 생성을 위한 표준 라이브러리
-import re              # 정규 표현식을 이용한 문자열 패턴 매칭 및 변환
-import schedule        # 스케줄링 라이브러리 (현재 One-Shot 모드에서는 미사용)
-import smtplib         # SMTP 프로토콜을 이용한 이메일 발송 기능
-import feedparser      # RSS/Atom 피드 파싱 라이브러리 (Google News RSS 파싱용)
-import trafilatura     # 웹페이지에서 본문 텍스트만 추출하는 라이브러리
-import urllib.parse    # URL 인코딩/디코딩 유틸리티 (검색 쿼리 인코딩용)
-import requests        # HTTP 요청을 보내는 라이브러리 (웹페이지 크롤링, API 호출용)
-import yfinance as yf  # Yahoo Finance API 래퍼 (주식 시세 및 재무 데이터 수집용)
+import os                                                               # 운영체제 환경 변수 접근 및 파일 시스템 관련 기능 제공
+import time                                                             # 시간 지연(sleep) 및 타이밍 관련 기능 제공
+import json                                                             # JSON 데이터 파싱 및 생성을 위한 표준 라이브러리
+import re                                                               # 정규 표현식을 이용한 문자열 패턴 매칭 및 변환
+import schedule                                                         # 스케줄링 라이브러리 (현재 One-Shot 모드에서는 미사용)
+import smtplib                                                          # SMTP 프로토콜을 이용한 이메일 발송 기능
+import feedparser                                                       # RSS/Atom 피드 파싱 라이브러리 (Google News RSS 파싱용)
+import trafilatura                                                      # 웹페이지에서 본문 텍스트만 추출하는 라이브러리
+import urllib.parse                                                     # URL 인코딩/디코딩 유틸리티 (검색 쿼리 인코딩용)
+import requests                                                         # HTTP 요청을 보내는 라이브러리 (웹페이지 크롤링, API 호출용)
+import yfinance as yf                                                   # Yahoo Finance API 래퍼 (주식 시세 및 재무 데이터 수집용)
 
-from datetime import datetime, timedelta  # 날짜/시간 계산용 (24시간 이내 필터링 등)
-from email.mime.text import MIMEText       # 이메일 본문(텍스트/HTML) 생성용
-from googleapiclient.discovery import build         # Google API 클라이언트 (YouTube Data API v3 사용)
-from youtube_transcript_api import YouTubeTranscriptApi  # 유튜브 영상 자막 추출 라이브러리
+from datetime import datetime, timedelta                                # 날짜/시간 계산용 (24시간 이내 필터링 등)
+from email.mime.text import MIMEText                                    # 이메일 본문(텍스트/HTML) 생성용
+from googleapiclient.discovery import build                             # Google API 클라이언트 (YouTube Data API v3 사용)
+from youtube_transcript_api import YouTubeTranscriptApi                 # 유튜브 영상 자막 추출 라이브러리
 
-import google.generativeai as genai  # Google Gemini AI API (텍스트 분석 및 생성)
-import video_studio                   # 커스텀 모듈: 영상 제작 관련 기능 담당
-import youtube_manager                # 커스텀 모듈: 유튜브 업로드 및 관리 기능 담당
-import glob                           # 파일 패턴 매칭 (와일드카드로 파일 검색)
+import google.generativeai as genai                                     # Google Gemini AI API (텍스트 분석 및 생성)
+import video_studio                                                     # 커스텀 모듈: 영상 제작 관련 기능 담당
+import youtube_manager                                                  # 커스텀 모듈: 유튜브 업로드 및 관리 기능 담당
+import glob                                                             # 파일 패턴 매칭 (와일드카드로 파일 검색)
 
-import pandas_market_calendars as mcal  # 주식 시장 캘린더 (휴장일/개장일 확인용)
-import pytz                             # 타임존 변환 라이브러리 (UTC ↔ 뉴욕 시간 변환)
+import pandas_market_calendars as mcal                                  # 주식 시장 캘린더 (휴장일/개장일 확인용)
+import pytz                                                             # 타임존 변환 라이브러리 (UTC ↔ 뉴욕 시간 변환)
 
-import smtplib                          # (중복 import - 이미 위에서 import됨)
-from email.mime.multipart import MIMEMultipart  # 복합 이메일 메시지 생성 (본문+첨부파일)
-from email.mime.text import MIMEText            # (중복 import - 이미 위에서 import됨)
-from email.mime.image import MIMEImage          # 이메일에 이미지 첨부용
+import smtplib                                                          # (중복 import - 이미 위에서 import됨)
+from email.mime.multipart import MIMEMultipart                          # 복합 이메일 메시지 생성 (본문+첨부파일)
+from email.mime.text import MIMEText                                    # (중복 import - 이미 위에서 import됨)
+from email.mime.image import MIMEImage                                  # 이메일에 이미지 첨부용
 
 # [추가] Selenium 라이브러리 (공포지수 크롤링용)
 # CNN Fear & Greed Index 페이지는 JavaScript로 렌더링되므로 Selenium 브라우저 자동화가 필요합니다.
-from selenium import webdriver                          # 웹 브라우저 자동화 드라이버
-from selenium.webdriver.chrome.options import Options   # Chrome 브라우저 옵션 설정
+from selenium import webdriver                                          # 웹 브라우저 자동화 드라이버
+from selenium.webdriver.chrome.options import Options                   # Chrome 브라우저 옵션 설정
 from selenium.webdriver.chrome.service import Service as ChromeService  # Chrome 서비스 관리
-from selenium.webdriver.common.by import By             # 웹 요소 탐색 방법 지정 (ID, CLASS, TAG 등)
+from selenium.webdriver.common.by import By                             # 웹 요소 탐색 방법 지정 (ID, CLASS, TAG 등)
 
 
 # -----------------------------------------------------------------------------------------------------------------------------#

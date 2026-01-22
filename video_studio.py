@@ -56,8 +56,33 @@ def create_safe_text_clip(text, **kwargs):
 # -----------------------------------------------------------------------------------------------------------------------------#
 # [NEW] Dynamic Audio & Subtitle Generator
 # -----------------------------------------------------------------------------------------------------------------------------#
+
+def strip_markdown_for_tts(text):
+    """
+    TTS용 텍스트에서 마크다운 기호를 제거합니다.
+    예: "**테슬라**가 급등" → "테슬라가 급등"
+    """
+    if not text:
+        return text
+    # 볼드/이탤릭 (**text**, *text*, __text__, _text_)
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)  # **bold**
+    text = re.sub(r'\*([^*]+)\*', r'\1', text)      # *italic*
+    text = re.sub(r'__([^_]+)__', r'\1', text)      # __bold__
+    text = re.sub(r'_([^_]+)_', r'\1', text)        # _italic_
+    # 취소선 (~~text~~)
+    text = re.sub(r'~~([^~]+)~~', r'\1', text)
+    # 헤더 (# ## ###)
+    text = re.sub(r'^#{1,6}\s*', '', text, flags=re.MULTILINE)
+    # 링크 [text](url) -> text
+    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+    # 코드 블록 (`code`)
+    text = re.sub(r'`([^`]+)`', r'\1', text)
+    return text.strip()
+
 async def _gen_voice_file(text, filename):
-    communicate = edge_tts.Communicate(text, "ko-KR-SunHiNeural")
+    # TTS로 보내기 전에 마크다운 기호 제거
+    clean_text = strip_markdown_for_tts(text)
+    communicate = edge_tts.Communicate(clean_text, "ko-KR-SunHiNeural")
     await communicate.save(filename)
 
 def generate_dynamic_audio_and_subs(script_text, scene_name):

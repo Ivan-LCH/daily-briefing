@@ -688,7 +688,9 @@ def analyze_and_summarize(stocks, news, youtube, economy_news):
     print("🧠 AI 편집장: 데이터 분석 및 방송 대본(Script) 집필 중...")
     
     # 오늘 날짜 포맷 (대본에서 "12월 15일 데일리 브리핑입니다" 형태로 사용)
-    today_date = datetime.now().strftime("%m월 %d일")
+    # 한국 시간(KST) 기준으로 날짜 표시
+    kst = pytz.timezone('Asia/Seoul')
+    today_date = datetime.now(kst).strftime("%m월 %d일")
     
     # 분석할 데이터가 없으면 조기 반환
     if not stocks and not news and not youtube:
@@ -1305,7 +1307,7 @@ def send_email(recipients, subject, html_body, attachment_path=None):
         print("❌ 이메일 설정(EMAIL_SENDER, EMAIL_PASSWORD)이 없습니다. .env 파일을 확인하세요.")
         return
 
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    today_str = datetime.now(pytz.timezone('Asia/Seoul')).strftime("%Y-%m-%d")
 
     # [Step 1] CSS 스타일 정의
     # 이메일 클라이언트 호환성을 위해 인라인 스타일 사용
@@ -1463,7 +1465,7 @@ def send_slack(webhook_url, html_body):
         print("⚠️ 슬랙 URL이 설정되지 않음")
         return
 
-    today      = datetime.now().strftime("%Y-%m-%d")
+    today      = datetime.now(pytz.timezone('Asia/Seoul')).strftime("%Y-%m-%d")
     # HTML을 보기 좋은 텍스트로 변환
     slack_text = f"📅 *{today} 데일리 투자 리포트*\n\n" + html_to_slack_text(html_body)
     
@@ -1628,7 +1630,7 @@ def job():
         print("❌ 설정 파일(config.json)을 찾을 수 없습니다.")
         return
     
-    today_str        = datetime.now().strftime("%Y-%m-%d")
+    today_str        = datetime.now(pytz.timezone('Asia/Seoul')).strftime("%Y-%m-%d")
     
     # ========================================================================================
     # [Phase 1] 데이터 수집

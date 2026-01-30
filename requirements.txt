@@ -8,7 +8,6 @@ trafilatura
 schedule
 requests
 yfinance
-edge-tts
 moviepy==1.0.3
 matplotlib
 pillow==9.5.0

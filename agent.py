@@ -1537,7 +1537,7 @@ def html_to_youtube_description(html_content):
 ⚠️ 알림 (Disclaimer)
 이 영상은 인공지능(AI)을 활용하여 자동 생성되었습니다.
 - 대본 및 분석: Google Gemini 1.5
-- 음성: Microsoft Edge TTS
+- 음성: Qwen3-TTS
 - 영상 편집: Python (MoviePy)
 
 투자의 책임은 투자자 본인에게 있으며, 제공된 정보는 참고용입니다.
@@ -1674,6 +1674,12 @@ def job():
 
             # video_studio 모듈의 make_video_module 함수 호출
             if hasattr(video_studio, 'make_video_module'):
+                # TTS 설정 전달 (Qwen3-TTS API 서버 설정)
+                tts_config = config.get('tts_config', {})
+                if hasattr(video_studio, 'set_tts_config'):
+                    video_studio.set_tts_config(tts_config)
+                    print(f"🔊 TTS 설정 적용: {tts_config.get('server_url', 'http://localhost:8002')}")
+                
                 video_file = video_studio.make_video_module(
                     scene_scripts   = generated_scripts,   # AI가 생성한 6개 씬 대본
                     structured_data = structured_data,     # 시각화에 필요한 데이터

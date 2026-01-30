@@ -1,11 +1,10 @@
 import os
 import sys
 import time
-import asyncio
 import re
 import numpy as np
 from datetime import datetime
-import edge_tts
+import requests
 from moviepy.editor import *
 from moviepy.config import change_settings
 from PIL import Image, ImageDraw, ImageFont
@@ -79,11 +78,85 @@ def strip_markdown_for_tts(text):
     text = re.sub(r'`([^`]+)`', r'\1', text)
     return text.strip()
 
-async def _gen_voice_file(text, filename):
-    # TTS로 보내기 전에 마크다운 기호 제거
+def _gen_voice_file(text, filename, tts_config=None, max_retries=3):
+    """
+    Qwen3-TTS API를 호출하여 음성 파일을 생성합니다.
+    
+    Args:
+        text: 음성으로 변환할 텍스트
+        filename: 저장할 파일 경로 (mp3 또는 wav)
+        tts_config: TTS 설정 딕셔너리 (server_url, voice_name, ref_audio_path, ref_text)
+        max_retries: 최대 재시도 횟수 (기본값: 3)
+    """
     clean_text = strip_markdown_for_tts(text)
-    communicate = edge_tts.Communicate(clean_text, "ko-KR-SunHiNeural")
-    await communicate.save(filename)
+    
+    # 기본 설정
+    server_url = "http://localhost:8002"
+    voice_name = None
+    ref_audio_path = None
+    ref_text = None
+    
+    if tts_config:
+        server_url = tts_config.get("server_url", server_url)
+        voice_name = tts_config.get("voice_name")
+        ref_audio_path = tts_config.get("ref_audio_path")
+        ref_text = tts_config.get("ref_text")
+    
+    last_error = None
+    
+    for attempt in range(1, max_retries + 1):
+        # API 요청 데이터 구성 (매 시도마다 새로 구성)
+        data = {"text": clean_text}
+        files = {}
+        
+        try:
+            if voice_name:
+                # 등록된 음성 사용
+                data["voice_name"] = voice_name
+            elif ref_audio_path and os.path.exists(ref_audio_path):
+                # 즉시 Clone 모드
+                files["ref_audio"] = open(ref_audio_path, "rb")
+                if ref_text:
+                    data["ref_text"] = ref_text
+            
+            # API 호출
+            response = requests.post(
+                f"{server_url}/generate",
+                data=data,
+                files=files if files else None,
+                timeout=60
+            )
+            response.raise_for_status()
+            
+            with open(filename, "wb") as f:
+                f.write(response.content)
+            
+            # 성공 시 함수 종료
+            return
+            
+        except requests.exceptions.RequestException as e:
+            last_error = e
+            print(f"⚠️ TTS API 호출 실패 (시도 {attempt}/{max_retries}): {e}")
+            
+            if attempt < max_retries:
+                print(f"   ⏳ 2초 후 재시도...")
+                time.sleep(2)
+        finally:
+            # 파일 핸들 정리
+            for f in files.values():
+                if hasattr(f, 'close'):
+                    f.close()
+    
+    # 모든 재시도 실패 시 예외 발생
+    raise Exception(f"TTS API 호출이 {max_retries}회 모두 실패했습니다: {last_error}")
+
+# TTS 설정을 전역으로 관리 (load_tts_config로 설정)
+_tts_config = None
+
+def set_tts_config(config):
+    """TTS 설정을 전역으로 설정합니다."""
+    global _tts_config
+    _tts_config = config
 
 def generate_dynamic_audio_and_subs(script_text, scene_name):
     sentences = re.split(r'(?<=[.?!])\s+', script_text.strip())
@@ -101,8 +174,8 @@ def generate_dynamic_audio_and_subs(script_text, scene_name):
     for i, sent in enumerate(sentences):
         fname = os.path.join(temp_dir, f"{scene_name}_{i}.mp3")
         try:
-            loop = asyncio.get_event_loop_policy().get_event_loop()
-            loop.run_until_complete(_gen_voice_file(sent, fname))
+            # Qwen3-TTS API 호출 (동기)
+            _gen_voice_file(sent, fname, _tts_config)
             
             aclip = AudioFileClip(fname)
             dur = aclip.duration
